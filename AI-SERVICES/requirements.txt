@@ -1,0 +1,75 @@
+# ==============================
+# AI SERVICE - CORE
+# ==============================
+
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+python-dotenv
+httpx
+
+
+# ==============================
+# AGENTIC AI / ORCHESTRATION
+# ==============================
+
+langgraph
+langchain
+langchain-core
+langchain-community
+langchain-ollama
+
+
+# ==============================
+# LOCAL LLM / MODEL SUPPORT
+# ==============================
+
+ollama
+
+
+# ==============================
+# VECTOR DATABASE / RAG
+# ==============================
+
+qdrant-client
+sentence-transformers
+
+
+# ==============================
+# MEMORY
+# ==============================
+
+mem0ai
+neo4j
+
+
+# ==============================
+# DOCUMENT PROCESSING
+# ==============================
+
+pypdf
+python-docx
+openpyxl
+python-pptx
+
+
+# ==============================
+# MULTIMODAL / IMAGE PROCESSING
+# ==============================
+
+Pillow
+
+
+# ==============================
+# OCR
+# ==============================
+
+pytesseract
+
+
+# ==============================
+# DATA / UTILITIES
+# ==============================
+
+numpy
