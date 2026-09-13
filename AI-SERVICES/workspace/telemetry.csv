@@ -1,0 +1,4 @@
+sensor_id,vibration_mms,temperature_c,status
+PUMP_01,2.1,65.0,PASS
+PUMP_02,4.8,88.5,FAIL
+PUMP_03,1.9,62.0,PASS

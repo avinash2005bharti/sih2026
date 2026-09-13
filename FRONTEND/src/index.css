@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-bg: #0b1115;
+    --color-surface: #0f1724;
+    --color-card: #ffffff;
+    --color-text: #e6eef8;
+    --color-muted: #94a3b8;
+    --color-primary: #1d4ed8;
+    --focus-ring: 3px rgba(29,78,216,0.12);
+  }
+
+  body {
+    @apply bg-[var(--color-bg)] text-[var(--color-text)] font-sans antialiased;
+    background-color: var(--color-bg);
+    color: var(--color-text);
+  }
+
+  /* Accessible focus ring for interactive controls */
+  :where(button, a, input, textarea, select):focus {
+    outline: 2px solid transparent;
+    box-shadow: 0 0 0 var(--focus-ring);
+  }
+}
+
+/* Custom scrollbar for ChatGPT/Claude feel */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.4);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.7);
+}
+
+/* Pulse animation for air-gap status */
+@keyframes sovereignPulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.92);
+  }
+}
+
+.pulse-dot {
+  animation: sovereignPulse 2.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Skeleton loader */
+.skeleton {
+  background: linear-gradient(90deg, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0.06) 37%, rgba(255,255,255,0.04) 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0 }
+  100% { background-position: -200% 0 }
+}

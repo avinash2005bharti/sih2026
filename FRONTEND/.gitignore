@@ -1,0 +1,17 @@
+@"
+.env
+*.env
+!.env.example
+
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+
+data/db/
+**/data/db/
+mongodb-data/
+**/mongodb-data/
+
+.git/
+"@ | Out-File -Encoding utf8 .gitignore

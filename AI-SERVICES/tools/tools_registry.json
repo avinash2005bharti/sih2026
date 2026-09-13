@@ -1,0 +1,680 @@
+{
+  "version": "1.0.0",
+  "system": "Sovereign AI Workbench",
+  "total_tools": 18,
+  "tools": {
+    "read_file": {
+      "name": "read_file",
+      "description": "Read the contents of a file inside the sovereign workspace sandbox.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Relative path to the file inside the workspace (e.g. 'notes.txt', 'data/report.csv')"
+          },
+          "start_line": {
+            "type": "integer",
+            "description": "Optional 1-indexed start line number to read from"
+          },
+          "end_line": {
+            "type": "integer",
+            "description": "Optional 1-indexed end line number to read up to"
+          }
+        },
+        "required": [
+          "file_path"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      }
+    },
+    "write_file": {
+      "name": "write_file",
+      "description": "Create or overwrite a file in the workspace sandbox with given content.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Relative path to target file (e.g. 'output/summary.md')"
+          },
+          "content": {
+            "type": "string",
+            "description": "Text content to write into the file"
+          },
+          "append": {
+            "type": "boolean",
+            "description": "If true, appends content to the end of the file instead of overwriting"
+          }
+        },
+        "required": [
+          "file_path",
+          "content"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      }
+    },
+    "create_directory": {
+      "name": "create_directory",
+      "description": "Create a new directory or folder inside the sovereign workspace sandbox.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "dir_path": {
+            "type": "string",
+            "description": "Relative folder path inside workspace (e.g. 'reports', 'project/src')"
+          }
+        },
+        "required": [
+          "dir_path"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      }
+    },
+    "delete_file": {
+      "name": "delete_file",
+      "description": "Delete a file inside the sovereign workspace sandbox.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Relative path to the file to delete"
+          }
+        },
+        "required": [
+          "file_path"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      }
+    },
+    "move_file": {
+      "name": "move_file",
+      "description": "Move or rename a file within the sovereign workspace sandbox.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "source_path": {
+            "type": "string",
+            "description": "Relative path of existing file"
+          },
+          "destination_path": {
+            "type": "string",
+            "description": "Relative path of new destination file"
+          }
+        },
+        "required": [
+          "source_path",
+          "destination_path"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      }
+    },
+    "patch_file": {
+      "name": "patch_file",
+      "description": "Replace target text in an existing file with new text and return a diff of changes.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Relative path to file inside workspace"
+          },
+          "target_text": {
+            "type": "string",
+            "description": "Exact text to find and replace"
+          },
+          "replacement_text": {
+            "type": "string",
+            "description": "Replacement text"
+          }
+        },
+        "required": [
+          "file_path",
+          "target_text",
+          "replacement_text"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      }
+    },
+    "list_directory": {
+      "name": "list_directory",
+      "description": "List files and folders inside a given workspace directory.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "dir_path": {
+            "type": "string",
+            "description": "Relative folder path inside workspace (use '.' for workspace root)"
+          }
+        },
+        "required": [
+          "dir_path"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      }
+    },
+    "file_diff": {
+      "name": "file_diff",
+      "description": "Compare existing file content with new content and output a unified diff.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Relative file path inside workspace"
+          },
+          "new_content": {
+            "type": "string",
+            "description": "New content to compare against existing file"
+          }
+        },
+        "required": [
+          "file_path",
+          "new_content"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      }
+    },
+    "execute_python": {
+      "name": "execute_python",
+      "description": "Execute a Python script safely within the sovereign workspace sandbox. Useful for data analysis, calculations, generating charts/data, and automated verification.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Python source code to execute"
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "description": "Maximum execution time in seconds (1 to 30, default 15)"
+          }
+        },
+        "required": [
+          "code"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      }
+    },
+    "execute_command": {
+      "name": "execute_command",
+      "description": "Execute a safe terminal command strictly inside the workspace sandbox directory. Allowed binaries: python, ls, dir, cat, type, echo, find, grep, pwd, date, whoami, git.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "Shell command line to execute inside the sandbox (e.g. 'python script.py', 'ls -la', 'dir')"
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "description": "Maximum execution time in seconds (default 15)"
+          }
+        },
+        "required": [
+          "command"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      }
+    },
+    "create_pdf": {
+      "name": "create_pdf",
+      "description": "Generate a formatted PDF document inside the sovereign workspace reports directory. Useful for exporting formal summaries, audit reports, and technical manuals.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_name": {
+            "type": "string",
+            "description": "Name of the output PDF file (e.g. 'audit_report.pdf')"
+          },
+          "title": {
+            "type": "string",
+            "description": "Document title heading"
+          },
+          "content": {
+            "type": "string",
+            "description": "Main body text paragraphs (separated by double newlines)"
+          }
+        },
+        "required": [
+          "file_name",
+          "title",
+          "content"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      }
+    },
+    "inspect_document": {
+      "name": "inspect_document",
+      "description": "Inspect a document file to get metadata, line count, word count, character count, and preview the first and last few lines.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Relative path to document inside workspace (e.g. 'manual.md', 'logs/system.log')"
+          },
+          "preview_lines": {
+            "type": "integer",
+            "description": "Number of preview lines from head and tail (default 10)"
+          }
+        },
+        "required": [
+          "file_path"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      }
+    },
+    "extract_document_sections": {
+      "name": "extract_document_sections",
+      "description": "Search a document for specific keywords, headings, or regex patterns and extract matching lines with surrounding context.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Relative path to the document"
+          },
+          "pattern": {
+            "type": "string",
+            "description": "Keyword or regular expression to search for"
+          },
+          "context_lines": {
+            "type": "integer",
+            "description": "Number of surrounding context lines to include (default 2)"
+          },
+          "max_matches": {
+            "type": "integer",
+            "description": "Maximum number of matching sections to return (default 10)"
+          }
+        },
+        "required": [
+          "file_path",
+          "pattern"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      }
+    },
+    "inspect_spreadsheet": {
+      "name": "inspect_spreadsheet",
+      "description": "Inspect a CSV spreadsheet to get column names, total row count, inferred column types, basic summary statistics (min, max, average) for numeric columns, and preview sample rows.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Relative path to CSV file inside workspace (e.g. 'telemetry.csv')"
+          },
+          "sample_rows": {
+            "type": "integer",
+            "description": "Number of sample rows to preview (default 5)"
+          }
+        },
+        "required": [
+          "file_path"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      }
+    },
+    "filter_spreadsheet": {
+      "name": "filter_spreadsheet",
+      "description": "Filter rows from a CSV file matching a specific column condition (e.g. column 'status' equals 'FAIL', or numeric 'vibration' greater than 4.5).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Relative path to CSV file"
+          },
+          "column": {
+            "type": "string",
+            "description": "Column name to filter on"
+          },
+          "operator": {
+            "type": "string",
+            "enum": [
+              "==",
+              "!=",
+              ">",
+              "<",
+              ">=",
+              "<=",
+              "contains"
+            ],
+            "description": "Comparison operator (default '==')"
+          },
+          "value": {
+            "type": "string",
+            "description": "Value to compare against"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum matching rows to return (default 20)"
+          }
+        },
+        "required": [
+          "file_path",
+          "column",
+          "value"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      }
+    },
+    "write_spreadsheet": {
+      "name": "write_spreadsheet",
+      "description": "Create a new CSV spreadsheet with specified columns and rows, or append rows to an existing CSV.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Relative path to target CSV file"
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "List of header column names"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "Row dictionary mapping column names to values"
+            },
+            "description": "List of rows to write"
+          },
+          "append": {
+            "type": "boolean",
+            "description": "If true, append to existing CSV instead of overwriting"
+          }
+        },
+        "required": [
+          "file_path",
+          "columns",
+          "rows"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      }
+    },
+    "search_knowledge_base": {
+      "name": "search_knowledge_base",
+      "description": "Search indexed sovereign technical documentation, manuals, incident reports, and regulations using semantic vector search. Returns the most relevant excerpts with similarity scores.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Natural language question or search topic (e.g. 'bearing replacement procedure', 'vibration tolerance standard')"
+          },
+          "top_k": {
+            "type": "integer",
+            "description": "Number of relevant document chunks to return (default 4)"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      }
+    },
+    "index_document": {
+      "name": "index_document",
+      "description": "Index text or notes into the sovereign vector database so it can be retrieved later using semantic search.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Title or reference name of the document"
+          },
+          "content": {
+            "type": "string",
+            "description": "Text content to embed and index"
+          }
+        },
+        "required": [
+          "title",
+          "content"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      }
+    }
+  }
+}

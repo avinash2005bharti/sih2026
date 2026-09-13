@@ -1,0 +1,56 @@
+# ==============================
+# AI SERVICE - CORE (Milestone 1 - ACTIVE)
+# ==============================
+
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+python-dotenv
+httpx
+
+
+# ==============================
+# AGENTIC AI / ORCHESTRATION (Milestone 7+ - ACTIVE)
+# ==============================
+
+langgraph
+langchain-core
+langchain-ollama
+reportlab
+pillow
+
+# ==============================
+# DEDICATED OCR ENGINE (LOCAL ON-PREMISE)
+# ==============================
+paddleocr>=2.8.0
+paddlepaddle>=3.0.0
+opencv-contrib-python>=4.10.0
+numpy>=1.24.0
+
+
+# ==============================
+# LOCAL LLM / MODEL SUPPORT (not needed - we use httpx directly)
+# ==============================
+
+# ollama
+
+
+# ==============================
+# VECTOR DATABASE / RAG (Milestone 10 - NOT YET)
+# ==============================
+
+# qdrant-client
+# sentence-transformers
+
+
+# ==============================
+# MEMORY (Milestone 12 - NOT YET)
+# ==============================
+
+# mem0ai
+# neo4j
+
+
+# ==============================
+# DOCUMENT
