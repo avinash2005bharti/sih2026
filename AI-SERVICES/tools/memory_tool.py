@@ -2,6 +2,7 @@ import json
 from tools.base_tool import BaseTool
 from memory.memory_manager import memory_manager
 from core.logging import logger
+from langchain_core.tools import tool
 
 class SaveMemoryTool(BaseTool):
     """Saves long-term user facts and preferences to the Sovereign memory system."""
@@ -25,3 +26,13 @@ class SaveMemoryTool(BaseTool):
             return json.dumps({"success": False, "error": "Failed to save memory."})
         except Exception as e:
             return json.dumps({"success": False, "error": str(e)})
+
+
+@tool
+async def save_memory(user_id: str, fact: str) -> str:
+    """
+    Save important facts or preferences about the user to long-term memory.
+    Example: save_memory(user_id="alice", fact="User prefers dark mode and uses python.")
+    """
+    tool = SaveMemoryTool()
+    return await tool.arun(user_id=user_id, fact=fact)

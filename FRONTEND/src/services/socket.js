@@ -18,7 +18,10 @@ let socket = null;
  * @returns {Object} Socket instance
  */
 export const initializeSocket = () => {
-  if (socket && socket.connected) {
+  if (socket) {
+    if (socket.disconnected) {
+      socket.connect();
+    }
     return socket;
   }
 

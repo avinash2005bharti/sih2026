@@ -11,6 +11,7 @@ import base64
 from multimodal.vision import vision_service
 from ocr.ocr_service import ocr_service
 from multimodal.multimodal_orchestrator import multimodal_orchestrator
+from api.routes.chat import validate_and_sanitize_image
 from core.logging import logger
 
 router = APIRouter()
@@ -102,6 +103,9 @@ async def analyze_multimodal_v1(
         if not image_source:
             raise HTTPException(status_code=400, detail="No image provided. Please upload a file or supply base64 image data.")
 
+        if isinstance(image_source, str):
+            image_source = validate_and_sanitize_image(image_source)
+
         result = await multimodal_orchestrator.analyze(
             image_source=image_source,
             user_prompt=effective_prompt,
@@ -141,9 +145,10 @@ async def analyze_image(request: ImageAnalysisRequest):
     """
     try:
         logger.info(f"Image analysis request | task_type={request.task_type}")
+        valid_image = validate_and_sanitize_image(request.image)
 
         if request.task_type == "ocr":
-            ocr_res = ocr_service.extract_text(request.image)
+            ocr_res = ocr_service.extract_text(valid_image)
             return ImageAnalysisResponse(
                 result=ocr_res.get("text", ""),
                 model=ocr_service._engine_name,
@@ -151,7 +156,7 @@ async def analyze_image(request: ImageAnalysisRequest):
             )
 
         if request.task_type == "classify":
-            classification_result = await vision_service.classify_image(request.image)
+            classification_result = await vision_service.classify_image(valid_image)
             return ImageAnalysisResponse(
                 result=classification_result["classification"],
                 model=classification_result["model"],
@@ -159,7 +164,7 @@ async def analyze_image(request: ImageAnalysisRequest):
             )
 
         if request.task_type == "diagram":
-            result = await vision_service.analyze_diagram(request.image)
+            result = await vision_service.analyze_diagram(valid_image)
             return ImageAnalysisResponse(
                 result=result,
                 model=vision_service.model,
@@ -168,7 +173,7 @@ async def analyze_image(request: ImageAnalysisRequest):
 
         # Default: Multimodal analysis (OCR + Moondream unified)
         multi_result = await multimodal_orchestrator.analyze(
-            image_source=request.image,
+            image_source=valid_image,
             user_prompt=request.prompt
         )
 
@@ -199,7 +204,8 @@ async def extract_text(request: TextExtractionRequest):
     """
     try:
         logger.info("[API] Dedicated text extraction request")
-        result = ocr_service.extract_text(request.image)
+        valid_image = validate_and_sanitize_image(request.image)
+        result = ocr_service.extract_text(valid_image)
 
         return {
             "success": result.get("success", False),
@@ -210,6 +216,8 @@ async def extract_text(request: TextExtractionRequest):
             "task_type": "ocr"
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Text extraction error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Extraction error: {str(e)}")
@@ -224,11 +232,14 @@ async def classify_image(request: ClassificationRequest):
     """Classify an image into categories."""
     try:
         logger.info("Image classification request")
-        result = await vision_service.classify_image(request.image, request.categories)
+        valid_image = validate_and_sanitize_image(request.image)
+        result = await vision_service.classify_image(valid_image, request.categories)
         return ClassificationResponse(
             classification=result["classification"],
             model=result["model"]
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Classification error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Classification error: {str(e)}")

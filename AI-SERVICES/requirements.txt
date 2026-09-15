@@ -37,20 +37,32 @@ numpy>=1.24.0
 
 
 # ==============================
-# VECTOR DATABASE / RAG (Milestone 10 - NOT YET)
+# VECTOR DATABASE / RAG (ACTIVE)
 # ==============================
 
-# qdrant-client
-# sentence-transformers
-
-
-# ==============================
-# MEMORY (Milestone 12 - NOT YET)
-# ==============================
-
-# mem0ai
-# neo4j
+qdrant-client>=1.10.0
 
 
 # ==============================
-# DOCUMENT
+# MEMORY & KNOWLEDGE GRAPH (ACTIVE)
+# ==============================
+
+mem0ai>=2.0.13
+neo4j>=5.0.0
+pymongo>=4.6.0
+
+
+# ==============================
+# DOCUMENT & UTILITY
+# ==============================
+
+pypdf
+python-multipart
+torch
+torchvision
+openpyxl
+# Document extraction dependencies
+pypdf>=4.0.0
+python-docx>=1.1.0
+openpyxl>=3.1.2
+python-pptx>=0.6.23

@@ -9,6 +9,7 @@ import sys
 import json
 import time
 import subprocess
+import re
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from reportlab.lib.pagesizes import letter
@@ -16,6 +17,9 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from langchain_core.tools import tool
 from core.logging import logger
+
+from tools.memory_tool import save_memory
+from tools.rag_tool import search_knowledge_base, index_document
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SANDBOX_DIR = (BASE_DIR / "workspace").resolve()
@@ -198,30 +202,82 @@ def execute_code(code: str, language: str = "python") -> str:
 
 
 @tool
-def create_pdf(file_name: str, title: str, content: str) -> str:
+def create_pdf(file_name: str, title: str, content: str = "", columns: Optional[List[str]] = None, rows: Optional[List[Any]] = None) -> str:
     """
     Generate a real PDF document inside the sovereign workspace under reports/ using ReportLab.
-    Example: create_pdf(file_name="architecture.pdf", title="Sovereign AI Architecture", content="This document outlines the on-premise architecture...")
+    Supports both paragraphs (via 'content') and structured tabular data (via 'columns' and 'rows').
+    Example: create_pdf(file_name="report.pdf", title="Report", content="Intro text...", columns=["ID", "Status"], rows=[[1, "OK"]])
     """
     if not file_name.endswith(".pdf"):
         file_name += ".pdf"
     
-    # Strip path separators to ensure it stays in reports directory
     clean_name = Path(file_name).name
     target = REPORTS_DIR / clean_name
 
     logger.info(f"[TOOL:create_pdf] Generating PDF '{clean_name}' at {target}...")
     try:
+        from reportlab.platypus import Table, TableStyle
+        from reportlab.lib import colors
+
         styles = getSampleStyleSheet()
         doc = SimpleDocTemplate(str(target), pagesize=letter)
         story = [
             Paragraph(title, styles['Title']),
             Spacer(1, 14),
         ]
-        for para in content.split("\n\n"):
-            if para.strip():
-                story.append(Paragraph(para.strip().replace("\n", "<br/>"), styles['Normal']))
-                story.append(Spacer(1, 10))
+
+        # Add structured table if columns and rows are provided
+        if columns and rows:
+            t_data = [[Paragraph(str(c), styles['Normal']) for c in columns]]
+            for row_items in rows:
+                t_data.append([Paragraph(str(cell), styles['Normal']) for cell in row_items])
+            
+            t = Table(t_data)
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E3A8A')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#F8FAFC')),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CBD5E1')),
+            ]))
+            story.append(t)
+            story.append(Spacer(1, 12))
+
+        # Check if content contains markdown tables (legacy fallback)
+        if content:
+            for block in content.split("\n\n"):
+                lines = [l.strip() for l in block.splitlines() if l.strip()]
+                # Detect Markdown table (| col1 | col2 |)
+                if lines and all(l.startswith("|") and l.endswith("|") for l in lines):
+                    t_data = []
+                    for line in lines:
+                        if re.match(r'^\|[\s\-:|]+\|$', line):
+                            continue # Separator line
+                        cols = [c.strip() for c in line.strip("|").split("|")]
+                        t_data.append([Paragraph(c, styles['Normal']) for c in cols])
+                    if t_data:
+                        t = Table(t_data)
+                        t.setStyle(TableStyle([
+                            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E3A8A')),
+                            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                            ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+                            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#F8FAFC')),
+                            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CBD5E1')),
+                        ]))
+                        story.append(t)
+                        story.append(Spacer(1, 12))
+                        continue
+
+                # Regular paragraph
+                clean_p = block.strip().replace("\n", "<br/>")
+                if clean_p:
+                    story.append(Paragraph(clean_p, styles['Normal']))
+                    story.append(Spacer(1, 10))
+
         doc.build(story)
 
         if not target.exists():
@@ -244,6 +300,22 @@ def create_pdf(file_name: str, title: str, content: str) -> str:
 
 
 @tool
+def create_excel(file_name: str, headers: List[str], rows: List[Any], title: Optional[str] = None) -> str:
+    """
+    Generate an official Microsoft Excel (.xlsx) spreadsheet inside the sovereign workspace sandbox.
+    Example: create_excel(file_name="report.xlsx", headers=["Component", "Status"], rows=[["P-101", "Normal"]])
+    """
+    try:
+        import asyncio
+        from tools.excel_tool import excel_tool
+        res = asyncio.run(excel_tool.arun(file_name=file_name, headers=headers, rows=rows, title=title))
+        return json.dumps(res)
+    except Exception as e:
+        logger.error(f"[TOOL:create_excel] Error: {e}")
+        return json.dumps({"success": False, "error": str(e)})
+
+
+@tool
 def execute_command(command: str) -> str:
     """
     Execute a safe terminal command strictly inside the workspace sandbox directory.
@@ -256,10 +328,88 @@ def execute_command(command: str) -> str:
         res = asyncio.run(tool_manager.execute_tool("execute_command", {"command": command}))
         return json.dumps(res.get("result", res))
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e), "exit_code": 1})
+        return json.dumps({"success": False, "error": str(e)})
 
 
-# Canonical list of registered tools
+@tool
+def create_image(file_name: str, prompt: str) -> str:
+    """
+    Generate an image placeholder (SVG) based on a text prompt inside the sovereign workspace sandbox.
+    Useful for creating mock images, visual representations, or stubs when requested.
+    Example: create_image(file_name="concept.svg", prompt="A futuristic city skyline")
+    """
+    try:
+        if not file_name.endswith(".svg"):
+            file_name += ".svg"
+        
+        target = resolve_safe_path(f"reports/{file_name}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        
+        # We generate a simple scalable vector graphics representation of the prompt
+        svg_content = f'''<svg width="800" height="600" xmlns="http://www.w3.org/2000/svg">
+  <rect width="100%" height="100%" fill="#2c3e50" />
+  <text x="50%" y="45%" font-family="Arial" font-size="32" fill="#ecf0f1" text-anchor="middle">Image Placeholder</text>
+  <text x="50%" y="55%" font-family="Arial" font-size="18" fill="#bdc3c7" text-anchor="middle">Prompt: {prompt}</text>
+</svg>'''
+        
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(svg_content)
+            
+        rel_path = str(target.relative_to(SANDBOX_DIR)).replace("\\", "/")
+        logger.info(f"[TOOL:create_image] Generated SVG image '{rel_path}' for prompt: {prompt}")
+        return json.dumps({
+            "success": True,
+            "file_path": rel_path,
+            "message": f"Image '{rel_path}' generated successfully."
+        })
+    except Exception as e:
+        logger.error(f"[TOOL:create_image] Error: {e}")
+        return json.dumps({"success": False, "error": str(e)})
+
+
+@tool
+def create_diagram(file_name: str, mermaid_code: str) -> str:
+    """
+    Generate a structural diagram (architecture, class, sequence) using Mermaid.js syntax.
+    Saves a markdown file with the mermaid block that the frontend will render.
+    Example: create_diagram(file_name="arch.md", mermaid_code="graph TD\\nA-->B;")
+    """
+    try:
+        if not file_name.endswith(".md"):
+            file_name += ".md"
+            
+        target = resolve_safe_path(f"reports/{file_name}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        
+        content = f"```mermaid\\n{mermaid_code}\\n```"
+        
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(content)
+            
+        rel_path = str(target.relative_to(SANDBOX_DIR)).replace("\\", "/")
+        logger.info(f"[TOOL:create_diagram] Generated diagram '{rel_path}'")
+        return json.dumps({
+            "success": True,
+            "file_path": rel_path,
+            "message": f"Diagram '{rel_path}' generated successfully."
+        })
+    except Exception as e:
+        logger.error(f"[TOOL:create_diagram] Error: {e}")
+        return json.dumps({"success": False, "error": str(e)})
+
+
+@tool
+def create_flowchart(file_name: str, mermaid_code: str) -> str:
+    """
+    Generate a flowchart or process diagram using Mermaid.js syntax.
+    Saves a markdown file with the mermaid block that the frontend will render.
+    Example: create_flowchart(file_name="process.md", mermaid_code="graph LR\\nStart-->End;")
+    """
+    # Functions similarly to create_diagram but explicitly named for the agent's intent
+    return create_diagram.invoke({"file_name": file_name, "mermaid_code": mermaid_code})
+
+
+# Registry of all available tools
 AGENT_TOOLS = [
     create_directory,
     create_file,
@@ -269,6 +419,13 @@ AGENT_TOOLS = [
     execute_code,
     execute_command,
     create_pdf,
+    create_excel,
+    create_image,
+    create_diagram,
+    create_flowchart,
+    save_memory,
+    search_knowledge_base,
+    index_document
 ]
 
 # Map both canonical names and dot-notation aliases
@@ -282,6 +439,13 @@ TOOLS_MAP: Dict[str, Any] = {
     "execute_code": execute_code,
     "execute_command": execute_command,
     "create_pdf": create_pdf,
+    "create_excel": create_excel,
+    "create_image": create_image,
+    "create_diagram": create_diagram,
+    "create_flowchart": create_flowchart,
+    "save_memory": save_memory,
+    "search_knowledge_base": search_knowledge_base,
+    "index_document": index_document,
     # Dot-notation aliases
     "file.create_directory": create_directory,
     "file.create": create_file,
@@ -291,6 +455,13 @@ TOOLS_MAP: Dict[str, Any] = {
     "code.execute": execute_code,
     "command.execute": execute_command,
     "pdf.create": create_pdf,
+    "excel.create": create_excel,
+    "image.create": create_image,
+    "diagram.create": create_diagram,
+    "flowchart.create": create_flowchart,
+    "memory.save": save_memory,
+    "knowledge.search": search_knowledge_base,
+    "document.index": index_document,
 }
 
 

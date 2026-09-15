@@ -17,7 +17,7 @@ timeout /t 3 /nobreak >nul
 
 :: 3. Start Python FastAPI AI Service
 echo [3/5] Starting AI Service (port 8000)...
-start "Sovereign - AI Service" powershell -NoExit -Command "$host.UI.RawUI.WindowTitle = 'Sovereign - AI Service (8000)'; cd '%~dp0AI-SERVICES'; python -m uvicorn main:app --port 8000"
+start "Sovereign - AI Service" powershell -NoExit -Command "$host.UI.RawUI.WindowTitle = 'Sovereign - AI Service (8000)'; cd '%~dp0AI-SERVICES'; py -3 -m uvicorn main:app --port 8000"
 
 :: Wait 3 seconds for AI Service to initialize
 timeout /t 3 /nobreak >nul

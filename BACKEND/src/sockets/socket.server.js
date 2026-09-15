@@ -18,6 +18,7 @@ const messageModel = require("../models/message.model");
  * Value: { abortController, socketId, conversationId, completed }
  */
 const activeGenerations = new Map();
+const completedGenerations = new Set();
 
 module.exports = function initializeSocketServer(httpServer) {
   const io = new Server(httpServer, {
@@ -36,9 +37,9 @@ module.exports = function initializeSocketServer(httpServer) {
   io.use(async (socket, next) => {
     try {
       let token = socket.handshake.auth?.token;
-      if (!token) {
+      if (!token && socket.request.headers.cookie) {
         token = socket.request.headers.cookie
-          ?.split("; ")
+          .split("; ")
           .find((c) => c.startsWith("token="))
           ?.split("=")[1];
       }
@@ -48,7 +49,12 @@ module.exports = function initializeSocketServer(httpServer) {
       }
 
       const jwt = require("jsonwebtoken");
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const secret = process.env.JWT_SECRET || "default_secret";
+      const decoded = jwt.verify(token, secret);
+      
+      if (!decoded || !decoded.id) {
+        return next(new Error("Invalid token payload"));
+      }
       
       socket.userId = decoded.id;
       socket.user = await userModel.findById(decoded.id);
@@ -59,6 +65,7 @@ module.exports = function initializeSocketServer(httpServer) {
 
       next();
     } catch (error) {
+      console.error("Socket authentication error:", error.message);
       next(new Error("Authentication failed"));
     }
   });
@@ -77,8 +84,9 @@ module.exports = function initializeSocketServer(httpServer) {
      * Frontend sends: { conversationId?, message, model?, agent? }
      */
     socket.on("chat:send", async (data) => {
-      const { conversationId, message, model = "auto", agent = "general", requestId, images, attachment } = data;
+      const { conversationId, message, model = "auto", agent = "auto", requestId, images, attachment } = data;
       const messageId = requestId || `msg_${Date.now()}`;
+      let chatId = conversationId;
 
       // Extract any base64 image data from attachment or images array
       let effectiveImages = [];
@@ -108,8 +116,8 @@ module.exports = function initializeSocketServer(httpServer) {
 
         // Resolve agent slug to DB Agent
         const Agent = require("../models/agent.model");
-        const agentDoc = await Agent.findOne({ slug: agent });
-        if (!agentDoc) {
+        const agentDoc = agent && agent !== "auto" ? await Agent.findOne({ slug: agent }) : null;
+        if (agent && agent !== "auto" && !agentDoc) {
           const availableAgents = await Agent.find({ isActive: true }).select('slug name');
           console.error(`Agent '${agent}' not found. Available agents:`, availableAgents.map(a => a.slug));
           socket.emit("chat:error", {
@@ -121,19 +129,18 @@ module.exports = function initializeSocketServer(httpServer) {
         }
 
         // Extract agent config for forwarding to Python AI service
-        const agentSystemPrompt = agentDoc.systemPrompt;
-        const agentTemperature = agentDoc.temperature;
-        const agentMaxTokens = agentDoc.maxTokens;
-        const effectiveModel = agentDoc.modelName || model;
+        const agentSystemPrompt = agentDoc?.systemPrompt;
+        const agentTemperature = agentDoc?.temperature;
+        const agentMaxTokens = agentDoc?.maxTokens;
+        const effectiveModel = (model && model.toLowerCase() === "auto") ? "auto" : (agentDoc?.modelName || model);
 
         // Resolve or create conversation
-        let chatId = conversationId;
         if (!chatId) {
           const newChat = await conversationModel.create({
             user: socket.userId,
             title: effectivePrompt.substring(0, 50),
             type: "chat",
-            activeAgent: agentDoc._id,
+            activeAgent: agentDoc?._id,
           });
           chatId = newChat._id.toString();
         }
@@ -142,16 +149,20 @@ module.exports = function initializeSocketServer(httpServer) {
         await messageModel.create({
           conversation: chatId,
           sender: "user",
-          agent: agentDoc._id,
+          agent: agentDoc?._id,
           content: effectivePrompt,
         });
 
         // Emit start event
-        socket.emit("chat:start", {
+        const startedPayload = {
           conversationId: chatId,
           messageId,
+          requestId: messageId,
           status: "processing",
-        });
+        };
+        socket.emit("chat:start", startedPayload); // legacy UI contract
+        socket.emit("chat:started", startedPayload);
+        socket.emit("chat:status", { ...startedPayload, stage: "accepted" });
 
         // Stream to AI service
         const abortController = new AbortController();
@@ -166,10 +177,11 @@ module.exports = function initializeSocketServer(httpServer) {
           socket,
           abortSignal: abortController.signal,
           messageId,
+          requestId: messageId,
           conversationId: chatId,
           message: effectivePrompt,
           model: effectiveModel,
-          agent: agentDoc.slug,
+          agent: agentDoc ? agentDoc.slug : agent,
           images: effectiveImages,
           systemPrompt: agentSystemPrompt,
           temperature: agentTemperature,
@@ -189,11 +201,17 @@ module.exports = function initializeSocketServer(httpServer) {
               generatedFiles,
               toolExecutions,
             });
+            if (!isComplete) socket.emit("chat:token", { conversationId: chatId, messageId, token: chunk || "" });
 
             if (isComplete) {
               // Prevent duplicate completion (race between stream 'end' and status:'completed')
+              if (completedGenerations.has(messageId)) {
+                return;
+              }
+              completedGenerations.add(messageId);
+              setTimeout(() => completedGenerations.delete(messageId), 60000);
+
               const gen = activeGenerations.get(messageId);
-              if (gen && gen.completed) return;
               if (gen) gen.completed = true;
               activeGenerations.delete(messageId);
 
@@ -211,7 +229,7 @@ module.exports = function initializeSocketServer(httpServer) {
                   await messageModel.create({
                     conversation: chatId,
                     sender: "assistant",
-                    agent: agentDoc._id,
+                    agent: agentDoc?._id,
                     content: fullResponse,
                     metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
                   });
@@ -226,20 +244,25 @@ module.exports = function initializeSocketServer(httpServer) {
                 conversationId: chatId,
                 messageId,
                 status: "completed",
+                response: fullResponse || "",
                 generatedFiles,
                 toolExecutions,
                 ocr: multimodalData?.ocr,
                 vision: multimodalData?.vision,
               });
+              socket.emit("chat:response", { conversationId: chatId, messageId, response: fullResponse || "", generatedFiles, toolExecutions });
+              socket.emit("chat:completed", { conversationId: chatId, messageId, status: "completed" });
             }
           },
           onError: (error) => {
             activeGenerations.delete(messageId);
-            socket.emit("chat:error", {
+            const errorPayload = {
               messageId,
               error: error.message || "AI service error",
               code: error.code || "AI_SERVICE_ERROR",
-            });
+            };
+            socket.emit("chat:error", errorPayload);
+            socket.emit("chat:completed", { conversationId: chatId, messageId, status: "failed" });
           },
         });
       } catch (error) {
@@ -250,6 +273,7 @@ module.exports = function initializeSocketServer(httpServer) {
           error: error.message || "Failed to process message",
           code: "INTERNAL_ERROR",
         });
+        socket.emit("chat:completed", { conversationId: chatId, messageId, status: "failed" });
       }
     });
 

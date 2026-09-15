@@ -15,6 +15,7 @@ const knowledgeBaseRoutes = require("./routes/knowledgeBase.routes");
 const toolRoutes = require("./routes/tool.routes");
 const settingRoutes = require("./routes/setting.routes");
 const adminRoutes = require("./routes/admin.routes");
+const memoryRoutes = require("./routes/memory.routes");
 
 // Create Express app
 const app = express();
@@ -86,6 +87,9 @@ app.use("/api/settings", settingRoutes);
 // Admin routes
 app.use('/api/admin', adminRoutes);
 
+// Memory Architecture Routes
+app.use('/api/memory', memoryRoutes);
+
 // ===============================
 // Health Check
 // ===============================
@@ -106,9 +110,12 @@ app.get("/api/health", async (req, res) => {
         const hw = hwRes.status === "fulfilled" ? hwRes.value : { nvidiaAvailable: false, mode: "cpu" };
         const ai = aiRes.status === "fulfilled" ? aiRes.value : { status: "offline" };
 
-        return res.status(200).json({
-            success: true,
-            message: "Sovereign AI Workbench API is running",
+        const aiReachable = ai.status && ai.status !== "offline" && ai.status !== "error";
+        const healthy = Boolean(ollama.available && aiReachable);
+        return res.status(healthy ? 200 : 503).json({
+            success: healthy,
+            status: healthy ? "healthy" : "degraded",
+            message: healthy ? "Sovereign AI Workbench API is healthy" : "Sovereign AI Workbench API is degraded",
             ollama: {
                 available: ollama.available || false,
                 url: OLLAMA_BASE_URL,
@@ -120,14 +127,17 @@ app.get("/api/health", async (req, res) => {
                 mode: hw.mode || "cpu"
             },
             services: {
-                node: "running",
-                aiService: ai.status || "offline"
+                node: "healthy",
+                python: ai.status || "offline",
+                ollama: ollama.available ? "healthy" : "unavailable",
+                ...(ai.services || {})
             }
         });
     } catch (error) {
-        return res.status(200).json({
-            success: true,
-            message: "Sovereign AI Workbench API is running",
+        return res.status(503).json({
+            success: false,
+            status: "degraded",
+            message: "Sovereign AI Workbench dependencies could not be checked",
             ollama: {
                 available: false,
                 url: process.env.OLLAMA_BASE_URL || "http://localhost:11434",

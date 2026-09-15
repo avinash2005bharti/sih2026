@@ -49,7 +49,7 @@ class ImagePreprocessor:
 
         if isinstance(image_source, str):
             # Check if base64 data URI or raw base64
-            if image_source.startswith("data:image"):
+            if image_source.startswith("data:") and "," in image_source:
                 base64_data = image_source.split(",", 1)[1]
                 image_bytes = base64.b64decode(base64_data)
                 img = Image.open(io.BytesIO(image_bytes))

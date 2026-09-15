@@ -34,6 +34,10 @@ class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
     task: Optional[str]
     selected_model: str
+    conversation_id: Optional[str]
+    request_id: Optional[str]
+    user_id: Optional[str]
+    structured_data: Optional[Dict[str, Any]]
     tool_calls: List[Dict[str, Any]]
     tool_results: List[Dict[str, Any]]
     tool_executions: List[Dict[str, Any]]
@@ -45,12 +49,19 @@ DEFAULT_SYSTEM_PROMPT = (
     "You are the Sovereign On-Premise AI Agent Workbench assistant.\n"
     "You operate strictly within a secure, on-premise, air-gapped infrastructure with verified local tools.\n\n"
     "AVAILABLE SOVEREIGN TOOLS:\n"
+    "- `create_excel` (arguments: `file_name`: str, `headers`: list of str, `rows`: list of lists, `title`: optional str): Creates an official, formatted Microsoft Excel (.xlsx) spreadsheet with styled headers and auto-sized columns.\n"
+    "- `create_pdf` (arguments: `file_name`: str, `title`: str, `content`: str, `columns`: optional list of str, `rows`: optional list of lists): Compiles a real PDF (paragraphs and tables) using ReportLab in reports/.\n"
     "- `execute_python` (arguments: `code`: str): Executes Python code in an isolated sandbox. Returns stdout, stderr, exit_code.\n"
     "- `create_file` (arguments: `file_path`: str, `content`: str): Creates or updates a file in the workspace.\n"
     "- `read_file` (arguments: `file_path`: str): Reads file contents inside the workspace.\n"
     "- `list_files` (arguments: `dir_path`: str): Lists files and directories in the workspace.\n"
     "- `create_directory` (arguments: `dir_path`: str): Creates a directory in the workspace.\n"
-    "- `create_pdf` (arguments: `file_name`: str, `title`: str, `content`: str): Compiles a real PDF using ReportLab in reports/.\n\n"
+    "- `create_image` (arguments: `file_name`: str, `prompt`: str): Generates an SVG image placeholder based on a text prompt.\n"
+    "- `create_diagram` (arguments: `file_name`: str, `mermaid_code`: str): Generates a structural diagram using Mermaid.js syntax and saves it as markdown.\n"
+    "- `create_flowchart` (arguments: `file_name`: str, `mermaid_code`: str): Generates a flowchart using Mermaid.js syntax and saves it as markdown.\n"
+    "- `save_memory` (arguments: `user_id`: str, `fact`: str): Saves important facts or preferences about the user to long-term memory.\n"
+    "- `search_knowledge_base` (arguments: `query`: str, `top_k`: int): Searches indexed technical documentation and manuals using vector search.\n"
+    "- `index_document` (arguments: `title`: str, `content`: str): Indexes text into the sovereign vector database for later retrieval.\n\n"
     "TOOL EXECUTION INSTRUCTIONS:\n"
     "To use a tool, you MUST output a JSON object in the following format ON A NEW LINE by itself:\n"
     "```json\n"
@@ -68,8 +79,9 @@ DEFAULT_SYSTEM_PROMPT = (
     "   - ALWAYS provide complete, fully functional, production-quality code.\n"
     "   - ALWAYS enclose code inside standard markdown fenced blocks specifying the language identifier.\n"
     "   - If the user asks you to run, execute, or calculate using Python, YOU MUST CALL THE `execute_python` TOOL using the JSON format above.\n"
-    "2. When a tool is executed, review the observation and synthesize a final response.\n"
-    "3. For general conceptual queries, answer directly without invoking tools."
+    "2. ONLY generate the specific file format requested by the user. Do not generate multiple formats unless explicitly requested. For example, if asked for a PDF, ONLY use create_pdf. If asked for an Excel file, ONLY use create_excel.\n"
+    "3. Once you have successfully executed the requested tools and generated the artifacts, STOP calling tools and return a final conversational response summarizing the generated files.\n"
+    "4. For general conceptual queries, answer directly without invoking tools."
 )
 
 
@@ -155,7 +167,13 @@ class SovereignLangGraphAgent:
         max_tokens: Optional[int] = None,
     ):
         self.model_name = model_name or settings.OLLAMA_CHAT_MODEL
-        self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
+        if system_prompt:
+            if DEFAULT_SYSTEM_PROMPT not in system_prompt:
+                self.system_prompt = f"{DEFAULT_SYSTEM_PROMPT}\n\n{system_prompt}"
+            else:
+                self.system_prompt = system_prompt
+        else:
+            self.system_prompt = DEFAULT_SYSTEM_PROMPT
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.tools = get_agent_tools()
@@ -202,6 +220,9 @@ class SovereignLangGraphAgent:
         # Tool Execution Node
         def tool_node(state: AgentState):
             import time
+            conv_id = state.get("conversation_id", "")
+            req_id = state.get("request_id")
+            u_id = state.get("user_id")
             last = state["messages"][-1]
             tool_calls = getattr(last, "tool_calls", [])
             tool_msgs = []
@@ -234,7 +255,7 @@ class SovereignLangGraphAgent:
 
                         # Check for file generation
                         if (
-                            t_name in ["create_pdf", "create_file", "pdf.create", "file.create"]
+                            t_name in ["create_pdf", "create_file", "create_excel", "pdf.create", "file.create", "excel.create"]
                             and isinstance(res_obj, dict)
                             and res_obj.get("success")
                         ):
@@ -247,6 +268,55 @@ class SovereignLangGraphAgent:
                             }
                             generated_files.append(file_info)
                             logger.info(f"[AGENT] File generated: {fname} ({res_obj.get('file_path')})")
+
+                            # Register artifact in MongoDB
+                            if conv_id:
+                                try:
+                                    from memory.artifacts.artifact_store import artifact_store
+                                    artifact_store.register_artifact(
+                                        conversation_id=conv_id,
+                                        filename=fname,
+                                        file_path=res_obj.get("file_path", ""),
+                                        mime_type=file_info["mime_type"],
+                                        size_bytes=file_info["size_bytes"],
+                                        description=t_args.get("title") or f"Created via tool {t_name}",
+                                        execution_id=cid,
+                                        request_id=req_id,
+                                        user_id=u_id
+                                    )
+                                except Exception as a_err:
+                                    logger.warning(f"[AGENT] Artifact registration note: {a_err}")
+
+                        # Check if execute_python created files on disk
+                        elif t_name in ["execute_python", "python.execute", "execute_code"] and isinstance(res_obj, dict) and res_obj.get("success"):
+                            for ext in [".xlsx", ".pdf", ".csv", ".txt"]:
+                                for p in SANDBOX_DIR.glob(f"*{ext}"):
+                                    if p.is_file() and (time.time() - p.stat().st_mtime) < 15:
+                                        fname = p.name
+                                        if not any(gf.get("name") == fname for gf in generated_files):
+                                            file_info = {
+                                                "name": fname,
+                                                "path": str(p.relative_to(SANDBOX_DIR)).replace("\\", "/"),
+                                                "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if ext == ".xlsx" else ("application/pdf" if ext == ".pdf" else "text/plain"),
+                                                "size_bytes": p.stat().st_size
+                                            }
+                                            generated_files.append(file_info)
+                                            if conv_id:
+                                                try:
+                                                    from memory.artifacts.artifact_store import artifact_store
+                                                    artifact_store.register_artifact(
+                                                        conversation_id=conv_id,
+                                                        filename=fname,
+                                                        file_path=file_info["path"],
+                                                        mime_type=file_info["mime_type"],
+                                                        size_bytes=file_info["size_bytes"],
+                                                        description=f"Generated via python execution: {fname}",
+                                                        execution_id=cid,
+                                                        request_id=req_id,
+                                                        user_id=u_id
+                                                    )
+                                                except Exception:
+                                                    pass
 
                         execution_record = {
                             "tool": t_name,
@@ -261,6 +331,25 @@ class SovereignLangGraphAgent:
                             "timestamp": time.time()
                         }
                         recorded_executions.append(execution_record)
+
+                        # Record execution in MongoDB
+                        if conv_id:
+                            try:
+                                from memory.executions.execution_store import execution_store
+                                execution_store.record_execution(
+                                    conversation_id=conv_id,
+                                    tool_name=t_name,
+                                    tool_args=t_args,
+                                    result=res_obj,
+                                    status="completed" if execution_record["success"] else "failed",
+                                    duration=duration,
+                                    created_files=[file_info] if file_info else [],
+                                    execution_id=cid,
+                                    request_id=req_id,
+                                    user_id=u_id
+                                )
+                            except Exception as ex_err:
+                                logger.warning(f"[AGENT] Execution record note: {ex_err}")
 
                     except Exception as e:
                         duration = round(time.time() - start_t, 3)
@@ -315,16 +404,37 @@ class SovereignLangGraphAgent:
 
         return workflow.compile()
 
-    async def execute(self, query: str) -> Dict[str, Any]:
-        """Run non-streaming workflow execution."""
-        logger.info(f"[AGENT] Starting agent execution for query: {query[:60]}...")
+    async def execute(
+        self,
+        query: str,
+        history_messages: Optional[List[Dict[str, str]]] = None,
+        conversation_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        user_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Run non-streaming workflow execution with conversation history retained."""
+        logger.info(f"[AGENT] Starting agent execution for query: {query[:60]}... (conv={conversation_id}, history_turns={len(history_messages or [])})")
+
+        init_messages: List[BaseMessage] = [SystemMessage(content=self.system_prompt)]
+        if history_messages:
+            for hm in history_messages:
+                role = hm.get("role", "user")
+                c = hm.get("content", "")
+                if c:
+                    if role == "user":
+                        init_messages.append(HumanMessage(content=c))
+                    elif role == "assistant":
+                        init_messages.append(AIMessage(content=c))
+        init_messages.append(HumanMessage(content=query))
+
         init_state: AgentState = {
-            "messages": [
-                SystemMessage(content=self.system_prompt),
-                HumanMessage(content=query)
-            ],
+            "messages": init_messages,
             "task": query,
             "selected_model": self.model_name,
+            "conversation_id": conversation_id,
+            "request_id": request_id,
+            "user_id": user_id,
+            "structured_data": {},
             "tool_calls": [],
             "tool_results": [],
             "tool_executions": [],
@@ -348,7 +458,14 @@ class SovereignLangGraphAgent:
             "messages": final_state.get("messages", []),
         }
 
-    async def stream(self, query: str) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream(
+        self,
+        query: str,
+        history_messages: Optional[List[Dict[str, str]]] = None,
+        conversation_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        user_id: Optional[str] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Stream workflow execution emitting granular real-time events:
         - agent:start
@@ -359,7 +476,7 @@ class SovereignLangGraphAgent:
         - token / content chunks
         - completed (with generatedFiles and toolExecutions)
         """
-        logger.info(f"[AGENT] Starting streaming agent execution: {query[:60]}...")
+        logger.info(f"[AGENT] Starting streaming agent execution: {query[:60]}... (conv={conversation_id})")
 
         # 1. Emit start event
         yield {
@@ -375,7 +492,7 @@ class SovereignLangGraphAgent:
         }
 
         # Execute full LangGraph flow with periodic keepalive
-        exec_task = asyncio.create_task(self.execute(query))
+        exec_task = asyncio.create_task(self.execute(query, history_messages=history_messages, conversation_id=conversation_id, request_id=request_id, user_id=user_id))
         while not exec_task.done():
             try:
                 await asyncio.wait_for(asyncio.shield(exec_task), timeout=3.0)

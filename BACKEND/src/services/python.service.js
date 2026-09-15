@@ -21,6 +21,7 @@ async function sendChatToAI({
     message,
     conversationId,
     userId,
+    requestId,
     model,
     images = [],
     context = {},
@@ -29,7 +30,10 @@ async function sendChatToAI({
         const payload = {
             message,
             conversationId,
+            conversation_id: conversationId,
             userId,
+            user_id: userId,
+            request_id: requestId,
             model,
             context,
         };
@@ -72,6 +76,7 @@ async function sendChatToAI({
 async function sendChatToAIStream({
     socket,
     messageId,
+    requestId,
     conversationId,
     message,
     model = "auto",
@@ -90,11 +95,17 @@ async function sendChatToAIStream({
             message,
             model,
             conversationId,
+            conversation_id: conversationId,
             userId,
+            user_id: userId,
+            requestId,
+            request_id: requestId,
             agent,
             systemPrompt,
+            system_prompt: systemPrompt,
             temperature,
-            maxTokens
+            maxTokens,
+            max_tokens: maxTokens,
         };
         if (images && images.length > 0) streamPayload.images = images;
 
@@ -116,23 +127,94 @@ async function sendChatToAIStream({
         let collectedFiles = [];
         let collectedToolExecutions = [];
         let collectedMultimodal = { ocr: null, vision: null };
+        let sseBuffer = "";
+        let completedSignaled = false;
 
-        // Process SSE (Server-Sent Events) stream
-        response.data.on("data", (chunk) => {
-            const lines = chunk.toString().split("\n");
+        const processSseLine = (line) => {
+            const trimmed = line.trim();
+            if (!trimmed) return;
 
-            for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed) continue;
+            // Parse SSE format: "data: {...}"
+            const payload = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : trimmed;
+            if (!payload || payload === "[DONE]") return;
 
-                // Parse SSE format: "data: {...}"
-                const payload = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : trimmed;
-                if (!payload || payload === "[DONE]") continue;
+            try {
+                const data = JSON.parse(payload);
 
+                // Forward real-time agent lifecycle and tool events
+                if (socket && data.event) {
+                    socket.emit(data.event, {
+                        conversationId,
+                        messageId,
+                        ...data
+                    });
+                }
+                
+                // Console logging for document creation and tool steps
+                if (data.event === "agent:tool:start") {
+                    console.log(`\n[AGENT TOOL] 🛠️ Executing Tool: ${data.tool}`);
+                    console.log(`[AGENT TOOL] 📦 Arguments:`, JSON.stringify(data.arguments || {}));
+                } else if (data.event === "agent:tool:result") {
+                    console.log(`[AGENT TOOL] ✅ Tool Completed: ${data.tool} in ${data.duration_seconds || 0}s`);
+                } else if (data.event === "agent:file:created") {
+                    console.log(`[AGENT FILE] 📄 Created Document: ${data.file?.name}`);
+                }
+
+                if (data.file) {
+                    collectedFiles.push(data.file);
+                }
+                if (data.generatedFiles && Array.isArray(data.generatedFiles)) {
+                    collectedFiles = data.generatedFiles;
+                }
+                if (data.tool_executions && Array.isArray(data.tool_executions)) {
+                    collectedToolExecutions = data.tool_executions;
+                }
+                if (data.event === "agent:tool:result") {
+                    collectedToolExecutions.push({
+                        tool: data.tool,
+                        arguments: data.arguments,
+                        result: data.result,
+                        stdout: data.stdout,
+                        stderr: data.stderr,
+                        exit_code: data.exit_code,
+                        duration_seconds: data.duration_seconds,
+                        success: data.success,
+                    });
+                }
+
+                if (data.event === "vision:result") {
+                    if (data.ocr) collectedMultimodal.ocr = data.ocr;
+                    if (data.vision) collectedMultimodal.vision = data.vision;
+                }
+
+                if (data.status === "completed" && !data.event) {
+                    if (typeof data.response === "string" && data.response) {
+                        fullResponse = data.response;
+                    }
+                    if (data.generatedFiles && Array.isArray(data.generatedFiles)) {
+                        collectedFiles = data.generatedFiles;
+                    }
+                    if (data.tool_executions && Array.isArray(data.tool_executions)) {
+                        collectedToolExecutions = data.tool_executions;
+                    }
+                    if (data.ocr) collectedMultimodal.ocr = data.ocr;
+                    if (data.vision) collectedMultimodal.vision = data.vision;
+                    if (!completedSignaled) {
+                        completedSignaled = true;
+                        onChunk("", true, fullResponse, collectedFiles, collectedToolExecutions, collectedMultimodal);
+                    }
+                    return;
+                }
+
+                const token = data.token || data.chunk || data.content || "";
+                if (typeof token === "string" && token) {
+                    fullResponse += token;
+                    onChunk(token, false, fullResponse, collectedFiles, collectedToolExecutions);
+                }
+            } catch (e) {
+                const normalized = payload.replace(/'/g, '"');
                 try {
-                    const data = JSON.parse(payload);
-
-                    // Forward real-time agent lifecycle and tool events
+                    const data = JSON.parse(normalized);
                     if (socket && data.event) {
                         socket.emit(data.event, {
                             conversationId,
@@ -140,7 +222,16 @@ async function sendChatToAIStream({
                             ...data
                         });
                     }
-
+                    
+                    // Console logging for document creation and tool steps (fallback parser)
+                    if (data.event === "agent:tool:start") {
+                        console.log(`\n[AGENT TOOL] 🛠️ Executing Tool: ${data.tool}`);
+                        console.log(`[AGENT TOOL] 📦 Arguments:`, JSON.stringify(data.arguments || {}));
+                    } else if (data.event === "agent:tool:result") {
+                        console.log(`[AGENT TOOL] ✅ Tool Completed: ${data.tool} in ${data.duration_seconds || 0}s`);
+                    } else if (data.event === "agent:file:created") {
+                        console.log(`[AGENT FILE] 📄 Created Document: ${data.file?.name}`);
+                    }
                     if (data.file) {
                         collectedFiles.push(data.file);
                     }
@@ -162,83 +253,48 @@ async function sendChatToAIStream({
                             success: data.success,
                         });
                     }
-
-                    if (data.event === "vision:result") {
-                        if (data.ocr) collectedMultimodal.ocr = data.ocr;
-                        if (data.vision) collectedMultimodal.vision = data.vision;
-                    }
-
-                    if (data.status === "completed" && !data.event) {
-                        if (data.generatedFiles && Array.isArray(data.generatedFiles)) {
-                            collectedFiles = data.generatedFiles;
-                        }
-                        if (data.tool_executions && Array.isArray(data.tool_executions)) {
-                            collectedToolExecutions = data.tool_executions;
-                        }
-                        if (data.ocr) collectedMultimodal.ocr = data.ocr;
-                        if (data.vision) collectedMultimodal.vision = data.vision;
-                        onChunk("", true, fullResponse, collectedFiles, collectedToolExecutions, collectedMultimodal);
-                        return;
-                    }
-
                     const token = data.token || data.chunk || data.content || "";
-                    console.log("RAW TOKEN:", JSON.stringify(token));
                     if (typeof token === "string" && token) {
                         fullResponse += token;
                         onChunk(token, false, fullResponse, collectedFiles, collectedToolExecutions);
                     }
-                } catch (e) {
-                    const normalized = payload.replace(/'/g, '"');
-                    try {
-                        const data = JSON.parse(normalized);
-                        if (socket && data.event) {
-                            socket.emit(data.event, {
-                                conversationId,
-                                messageId,
-                                ...data
-                            });
-                        }
-                        if (data.file) {
-                            collectedFiles.push(data.file);
-                        }
-                        if (data.generatedFiles && Array.isArray(data.generatedFiles)) {
-                            collectedFiles = data.generatedFiles;
-                        }
-                        if (data.tool_executions && Array.isArray(data.tool_executions)) {
-                            collectedToolExecutions = data.tool_executions;
-                        }
-                        if (data.event === "agent:tool:result") {
-                            collectedToolExecutions.push({
-                                tool: data.tool,
-                                arguments: data.arguments,
-                                result: data.result,
-                                stdout: data.stdout,
-                                stderr: data.stderr,
-                                exit_code: data.exit_code,
-                                duration_seconds: data.duration_seconds,
-                                success: data.success,
-                            });
-                        }
-                        const token = data.token || data.chunk || data.content || "";
-                        if (typeof token === "string" && token) {
-                            fullResponse += token;
-                            onChunk(token, false, fullResponse, collectedFiles, collectedToolExecutions);
-                        }
-                    } catch (fallbackErr) {
-                        console.error("Failed to parse SSE line:", line, fallbackErr);
-                    }
+                } catch (fallbackErr) {
+                    console.error("Failed to parse SSE line:", line, fallbackErr.message);
                 }
+            }
+        };
+
+        // Process SSE (Server-Sent Events) stream with chunk buffering
+        response.data.on("data", (chunk) => {
+            sseBuffer += chunk.toString();
+            // Split by double newline to get full SSE events safely
+            const events = sseBuffer.split(/\n\n/);
+            // Retain unclosed trailing event in buffer
+            sseBuffer = events.pop() || "";
+
+            for (const event of events) {
+                processSseLine(event);
             }
         });
 
         // Handle stream completion
         response.data.on("end", () => {
+            if (sseBuffer.trim()) {
+                processSseLine(sseBuffer);
+                sseBuffer = "";
+            }
             console.log(`✅ Stream completed for message ${messageId}`);
-            onChunk("", true, fullResponse, collectedFiles, collectedToolExecutions, collectedMultimodal); // Signal completion with files, tool executions, and multimodal data
+            if (!completedSignaled) {
+                completedSignaled = true;
+                onChunk("", true, fullResponse, collectedFiles, collectedToolExecutions, collectedMultimodal);
+            }
         });
 
         // Handle stream errors
         response.data.on("error", (error) => {
+            if (error.name === 'AbortError' || error.name === 'CanceledError' || error.code === 'ERR_CANCELED') {
+                return; // Silently ignore client cancellation errors
+            }
             console.error("❌ Stream Error:", error);
             onError({
                 message: "Stream interrupted",

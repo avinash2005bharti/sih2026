@@ -1,40 +1,83 @@
-from typing import Optional
+from typing import Optional, Dict, Any
 from core.config import settings
 from core.logging import logger
 
+MODEL_REGISTRY = {
+    "general": {
+        "provider": "ollama",
+        "model": "qwen2.5:1.5b",
+        "capabilities": [
+            "chat",
+            "reasoning",
+            "planning",
+            "classification",
+            "routing"
+        ]
+    },
+    "coding": {
+        "provider": "ollama",
+        "model": "qwen2.5-coder:1.5b",
+        "capabilities": [
+            "coding",
+            "python",
+            "javascript",
+            "debugging",
+            "automation"
+        ]
+    },
+    "vision": {
+        "provider": "ollama",
+        "model": "moondream:latest",
+        "capabilities": [
+            "vision",
+            "image_analysis",
+            "visual_understanding"
+        ]
+    },
+    "embedding": {
+        "provider": "ollama",
+        "model": "nomic-embed-text:latest",
+        "capabilities": [
+            "embedding"
+        ]
+    }
+}
+
 class ModelRegistry:
     def __init__(self):
-        self._registry = {
-            "chat": settings.OLLAMA_CHAT_MODEL,
-            "coding": settings.OLLAMA_CODE_MODEL,
-            "vision": settings.OLLAMA_VISION_MODEL,
-            "embedding": settings.OLLAMA_EMBED_MODEL,
-            "reasoning": settings.OLLAMA_CHAT_MODEL,  # reuse chat model for now
-        }
+        self._registry = MODEL_REGISTRY
 
-    def get_model(self, task_type: str = "chat") -> str:
-        model = self._registry.get(task_type)
-        if not model:
-            logger.warning(f"No model for task_type='{task_type}', falling back to chat")
-            model = self._registry["chat"]
-        return model
+    def get_model(self, task_type: str = "general") -> str:
+        """
+        Returns the specific model string for the given task_type mapped in the dictionary.
+        Uses 'general' if the task type isn't found.
+        """
+        if task_type in self._registry:
+            return self._registry[task_type]["model"]
+        logger.warning(f"No exact match for task_type='{task_type}', falling back to general model")
+        return self._registry["general"]["model"]
 
     def supports_tools(self, model_name: str) -> bool:
         """Check whether a given model reliably supports tool calling."""
         name_lower = (model_name or "").lower()
-        tool_capable_patterns = ["qwen2.5", "llama3.1", "llama3.2", "mistral", "hermes", "command-r", "firefunction"]
-        return any(pat in name_lower for pat in tool_capable_patterns)
+        # Ensure only the approved tool-capable models return True
+        return "qwen2.5-coder" in name_lower or "qwen2.5:1.5b" in name_lower
 
     def get_agent_model(self, requested_model: Optional[str] = None) -> str:
         """
-        Return a verified tool-capable model for Agent mode.
-        If requested_model supports tools, return it. Otherwise fall back to OLLAMA_CODE_MODEL.
+        Return the requested model. We trust the router or the user to provide a valid model
+        for the given task (e.g. moondream for vision, qwen2.5 for general).
         """
-        if requested_model and requested_model != "auto" and self.supports_tools(requested_model):
+        if requested_model and requested_model != "auto":
             return requested_model
-        return self._registry["coding"]  # default verified tool-capable model (qwen2.5-coder:3b)
+        return self._registry["coding"]["model"]
 
-    def list_models(self) -> dict:
+    def get_model_capabilities(self, model_group: str) -> list:
+        if model_group in self._registry:
+            return self._registry[model_group]["capabilities"]
+        return []
+
+    def list_models(self) -> Dict[str, Any]:
         return dict(self._registry)
 
 model_registry = ModelRegistry()

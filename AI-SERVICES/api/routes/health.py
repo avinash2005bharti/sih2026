@@ -95,6 +95,14 @@ async def health():
     # 4. Vision Model
     vision_model_name = getattr(settings, "VISION_MODEL", "moondream")
 
+    # 5. Memory Architecture Status Probe
+    try:
+        from memory.memory_manager import memory_manager
+        mem_health = await memory_manager.health_check()
+        mem_status_str = mem_health.get("memory", "unknown")
+    except Exception as e:
+        mem_status_str = "unavailable"
+
     # Status services map
     services_map = {
         "fastapi": ServiceStatus(name="FastAPI", status="running"),
@@ -107,10 +115,14 @@ async def health():
             name="PaddleOCR",
             status="ready" if ocr_is_ok else "unavailable",
             detail=ocr_status_dict.get("error")
+        ),
+        "memory": ServiceStatus(
+            name="LocalMemory",
+            status="ready" if mem_status_str == "healthy" else mem_status_str
         )
     }
 
-    # Status is healthy if FastAPI and Ollama and OCR are up; degraded if partial
+    # Status is healthy if FastAPI, Ollama, OCR, and Memory are up; degraded if partial
     overall_status = "healthy" if (is_ollama_available and ocr_is_ok) else "degraded"
     configured_models = model_router.get_all_models()
 
@@ -171,3 +183,16 @@ async def health_models():
     except Exception as e:
         logger.error(f"Models health check error: {e}")
         return {"status": "error", "error": str(e)}
+
+
+@router.get("/health/memory", summary="Memory system health")
+@router.get("/api/health/memory", summary="Memory system health (compatibility)")
+async def health_memory():
+    """Check health of all memory subsystems: STM, LTM, Qdrant, Neo4j, Mem0, Embeddings."""
+    try:
+        from memory.memory_manager import memory_manager
+        status = await memory_manager.health_check()
+        return status
+    except Exception as e:
+        logger.error(f"Memory health check error: {e}")
+        return {"memory": "unavailable", "error": str(e)}

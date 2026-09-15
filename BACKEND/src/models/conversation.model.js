@@ -37,6 +37,15 @@ const conversationSchema = new mongoose.Schema(
         "archived"
       ],
       default: "active"
+    },
+
+    summary: {
+      type: String,
+      default: ""
+    },
+
+    summaryUpdatedAt: {
+      type: Date
     }
   },
   {

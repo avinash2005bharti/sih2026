@@ -3,7 +3,7 @@ API routes for document management and RAG.
 """
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional
 import os
 from rag.retriever import rag_retriever
@@ -22,8 +22,8 @@ class DocumentRequest(BaseModel):
     documents: List[str] = Field(..., description="List of document texts to index")
     metadata: Optional[List[dict]] = Field(None, description="Optional metadata for each document")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "documents": [
                     "Your maintenance report content here",
@@ -35,6 +35,7 @@ class DocumentRequest(BaseModel):
                 ]
             }
         }
+    )
 
 
 class DocumentResponse(BaseModel):
@@ -50,14 +51,15 @@ class SearchRequest(BaseModel):
     top_k: int = Field(5, ge=1, le=20, description="Number of results to return")
     score_threshold: float = Field(0.0, ge=0.0, le=1.0, description="Minimum similarity score")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "query": "maintenance issues",
                 "top_k": 5,
                 "score_threshold": 0.0
             }
         }
+    )
 
 
 class SearchResult(BaseModel):

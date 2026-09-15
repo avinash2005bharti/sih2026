@@ -609,17 +609,17 @@
     },
     "search_knowledge_base": {
       "name": "search_knowledge_base",
-      "description": "Search indexed sovereign technical documentation, manuals, incident reports, and regulations using semantic vector search. Returns the most relevant excerpts with similarity scores.",
+      "description": "Search indexed sovereign technical documentation, manuals, incident reports, and regulations using semantic vector search.",
       "parameters": {
         "type": "object",
         "properties": {
           "query": {
             "type": "string",
-            "description": "Natural language question or search topic (e.g. 'bearing replacement procedure', 'vibration tolerance standard')"
+            "description": "The search query or semantic concept"
           },
           "top_k": {
             "type": "integer",
-            "description": "Number of relevant document chunks to return (default 4)"
+            "description": "Number of results to retrieve"
           }
         },
         "required": [
@@ -649,11 +649,11 @@
         "properties": {
           "title": {
             "type": "string",
-            "description": "Title or reference name of the document"
+            "description": "Title of the document"
           },
           "content": {
             "type": "string",
-            "description": "Text content to embed and index"
+            "description": "Text content of the document"
           }
         },
         "required": [

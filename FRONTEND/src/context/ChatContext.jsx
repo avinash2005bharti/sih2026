@@ -20,10 +20,11 @@ export const ChatProvider = ({ children }) => {
   const [sendError, setSendError] = useState(null);
 
   // Agents & Models — empty by default until fetched from backend
+  const AUTO_MODEL = { _id: 'auto', displayName: 'auto', name: 'Auto Route (Intelligent)', slug: 'auto' };
   const [agents, setAgents] = useState([]);
   const [selectedAgent, setSelectedAgent] = useState(null);
-  const [models, setModels] = useState([]);
-  const [selectedModel, setSelectedModel] = useState(null);
+  const [models, setModels] = useState([AUTO_MODEL]);
+  const [selectedModel, setSelectedModel] = useState(AUTO_MODEL);
 
   // Deep reasoning & UI toggles
   const [deepReasoning, setDeepReasoning] = useState(true);
@@ -104,11 +105,14 @@ export const ChatProvider = ({ children }) => {
     try {
       const data = await modelApi.getModels();
       const list = data?.models || [];
-      setModels(list);
-      if (list.length > 0) setSelectedModel(list[0]);
+      const fullList = [AUTO_MODEL, ...list.filter(m => m.slug !== 'auto' && m.displayName !== 'auto')];
+      setModels(fullList);
+      // Default to AUTO_MODEL unless already changed to a specific model
+      setSelectedModel((prev) => prev && prev._id !== 'auto' ? prev : AUTO_MODEL);
     } catch (e) {
       console.error('Failed to fetch models:', e.message);
-      setModels([]);
+      setModels([AUTO_MODEL]);
+      setSelectedModel(AUTO_MODEL);
     }
   }, [user]);
 
@@ -284,6 +288,12 @@ export const ChatProvider = ({ children }) => {
           },
           onComplete: async (data) => {
             console.log("✅ Response complete", data);
+            // A final response is authoritative.  It covers non-streaming
+            // fallbacks and stream providers that send completion before any
+            // token, preventing an empty assistant bubble.
+            if (data?.response && !streamingMessage.content) {
+              streamingMessage.content = data.response;
+            }
             if (data?.generatedFiles && data.generatedFiles.length > 0) {
               streamingMessage.generatedFiles = data.generatedFiles;
             }
@@ -323,7 +333,9 @@ export const ChatProvider = ({ children }) => {
 
         // Send message via Socket.IO
         const modelToUse = selectedModel?.displayName || 'auto';
-        const agentToUse = selectedAgent?.slug || 'general';
+        // Agent selection belongs to the Python orchestrator.  The UI may
+        // still display available agents, but must not force a generic agent.
+        const agentToUse = 'auto';
         const reqId = 'req_' + Date.now();
         setCurrentRequestId(reqId);
         const imagesToSend = attachment?.base64 ? [attachment.base64] : [];

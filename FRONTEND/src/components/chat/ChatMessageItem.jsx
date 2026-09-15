@@ -25,6 +25,68 @@ import {
 import { useChat } from '../../context/ChatContext';
 
 /**
+ * Lightweight, robust syntax highlighter for code blocks
+ */
+const highlightCode = (code, lang = '') => {
+  if (!code) return null;
+  const language = (lang || '').toLowerCase().trim();
+  const lines = code.split(/\r?\n/);
+
+  return lines.map((line, lineIdx) => {
+    let remaining = line;
+    let tokenIdx = 0;
+
+    // Line comment matchers
+    const isPythonOrShell = ['python', 'py', 'sh', 'bash', 'zsh', 'yaml', 'yml'].includes(language);
+    const commentMatch = isPythonOrShell ? remaining.match(/^(.*?)(\/\/.*|#.*)$/) : remaining.match(/^(.*?)(\/\/.*)$/);
+
+    let codePart = remaining;
+    let commentPart = null;
+    if (commentMatch && !remaining.includes('"""') && !remaining.includes("'''")) {
+      codePart = commentMatch[1];
+      commentPart = commentMatch[2];
+    }
+
+    // Tokenize strings, numbers, keywords in codePart
+    const tokenRegex = /(".*?"|'.*?'|`.*?`|\b(?:def|class|import|from|return|if|else|elif|for|while|try|except|finally|async|await|with|as|in|is|not|and|or|const|let|var|function|new|throw|catch|typeof|instanceof|yield|break|continue|None|True|False|true|false|null|undefined)\b|\b\d+\b|[a-zA-Z_][a-zA-Z0-9_]*(?=\())/g;
+    
+    let lastPos = 0;
+    let match;
+    const lineElements = [];
+
+    while ((match = tokenRegex.exec(codePart)) !== null) {
+      if (match.index > lastPos) {
+        lineElements.push(<span key={`txt-${lineIdx}-${tokenIdx++}`}>{codePart.slice(lastPos, match.index)}</span>);
+      }
+      const tok = match[0];
+      if (tok.startsWith('"') || tok.startsWith("'") || tok.startsWith('`')) {
+        lineElements.push(<span key={`str-${lineIdx}-${tokenIdx++}`} className="text-amber-300 font-medium">{tok}</span>);
+      } else if (/^\d+$/.test(tok)) {
+        lineElements.push(<span key={`num-${lineIdx}-${tokenIdx++}`} className="text-emerald-400">{tok}</span>);
+      } else if (match[1]) {
+        lineElements.push(<span key={`fn-${lineIdx}-${tokenIdx++}`} className="text-cyan-300">{tok}</span>);
+      } else {
+        lineElements.push(<span key={`kw-${lineIdx}-${tokenIdx++}`} className="text-purple-400 font-semibold">{tok}</span>);
+      }
+      lastPos = match.index + tok.length;
+    }
+    if (lastPos < codePart.length) {
+      lineElements.push(<span key={`txt-${lineIdx}-${tokenIdx++}`}>{codePart.slice(lastPos)}</span>);
+    }
+    if (commentPart) {
+      lineElements.push(<span key={`cmt-${lineIdx}-${tokenIdx++}`} className="text-slate-500 italic">{commentPart}</span>);
+    }
+
+    return (
+      <div key={`line-${lineIdx}`} className="table-row leading-relaxed">
+        <span className="table-cell pr-4 text-right select-none text-slate-600 text-[11px] font-mono opacity-50">{lineIdx + 1}</span>
+        <span className="table-cell whitespace-pre">{lineElements.length > 0 ? lineElements : '\u00A0'}</span>
+      </div>
+    );
+  });
+};
+
+/**
  * Dedicated Syntax-Highlighted Code Block with Copy Feedback
  */
 const CodeBlock = ({ language, code, isStreaming = false }) => {
@@ -69,9 +131,11 @@ const CodeBlock = ({ language, code, isStreaming = false }) => {
         </button>
       </div>
       {/* Code Content */}
-      <pre className="p-4 overflow-x-auto text-slate-100 font-mono text-xs sm:text-[13px] leading-relaxed bg-[#0d1117] selection:bg-blue-900 selection:text-white">
-        <code>{code}</code>
-      </pre>
+      <div className="p-4 overflow-x-auto text-slate-100 font-mono text-xs sm:text-[13px] leading-relaxed bg-[#0d1117] selection:bg-blue-900 selection:text-white">
+        <pre className="table w-full">
+          <code>{highlightCode(code, displayLang)}</code>
+        </pre>
+      </div>
     </div>
   );
 };
@@ -475,7 +539,7 @@ const ChatMessageItem = ({ message }) => {
         );
       } else if (line.trim()) {
         rendered.push(
-          <p key={`${keyPrefix}-${index}`} className="text-xs sm:text-sm text-slate-700 my-1.5 leading-relaxed">
+          <p key={`${keyPrefix}-${index}`} className="text-xs sm:text-sm text-slate-700 my-1.5 leading-relaxed whitespace-pre-wrap">
             {parseInlineStyles(line)}
           </p>
         );
@@ -489,7 +553,7 @@ const ChatMessageItem = ({ message }) => {
   const renderFormattedContent = (content) => {
     if (!content) return null;
 
-    const codeBlockRegex = /```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g;
+    const codeBlockRegex = /```([a-zA-Z0-9_+-]*)[^\n\r]*\r?\n([\s\S]*?)```/g;
     const elements = [];
     let lastIndex = 0;
     let match;
@@ -515,12 +579,14 @@ const ChatMessageItem = ({ message }) => {
           elements.push(...renderTextBlocks(parts[0], `rem-${lastIndex}`));
         }
         const rawCode = parts.slice(1).join('```');
-        const firstLineBreak = rawCode.indexOf('\n');
+        const firstLineBreak = rawCode.search(/\r?\n/);
         let lang = 'code';
         let code = rawCode;
         if (firstLineBreak !== -1) {
           lang = rawCode.substring(0, firstLineBreak).trim() || 'code';
-          code = rawCode.substring(firstLineBreak + 1);
+          const matchBreak = rawCode.match(/\r?\n/);
+          const breakLen = matchBreak ? matchBreak[0].length : 1;
+          code = rawCode.substring(firstLineBreak + breakLen);
         }
         elements.push(
           <CodeBlock key={`unclosed-${lastIndex}`} language={lang} code={code} isStreaming={true} />

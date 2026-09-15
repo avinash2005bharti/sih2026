@@ -1,48 +1,47 @@
 """
 Base agent - provides common functionality for specialized agents.
 Includes prompt building, model routing, and tool execution binding.
+Now integrated with the central AGENT_REGISTRY.
 """
 
 from typing import Any, Dict, List, Optional
-from abc import ABC, abstractmethod
+from abc import ABC
 from llm.model_router import model_router
 from llm.ollama_client import ollama_client
 from tools.tool_manager import tool_manager
+from agents.agent_registry import get_agent_config
 from core.logging import logger
 
 
 class BaseAgent(ABC):
     """Base class for all specialized agents."""
 
-    def __init__(self, name: str, description: str, model: Optional[str] = None, tools: Optional[List[str]] = None):
+    def __init__(self, name: str):
         """
-        Initialize base agent.
+        Initialize base agent using the central AGENT_REGISTRY.
 
         Args:
-            name: Agent name
-            description: Agent description
-            model: LLM model to use (optional, uses default if not specified)
-            tools: List of tool names this agent can use
+            name: Agent name (must match a key in AGENT_REGISTRY)
         """
         self.name = name
-        self.description = description
-        self.model = model
-        self.tools = tools or []
+        
+        config = get_agent_config(name)
+        self.description = config.get("description", "")
+        self.model = config.get("primary_model", "qwen2.5:1.5b")
+        self.tools = config.get("available_tools", [])
+        self.system_prompt = config.get("system_prompt", "")
+        self.memory_enabled = config.get("memory_enabled", False)
+        self.rag_enabled = config.get("rag_enabled", False)
+        self.can_delegate = config.get("can_delegate", False)
+
         self.state = {}
         self.conversation_history = []
 
-        logger.info(f"Initialized agent: {self.name} (tools: {self.tools})")
+        logger.info(f"Initialized agent: {self.name} (model: {self.model}, tools: {self.tools})")
 
     async def execute(self, task: str, context: Optional[Dict[str, Any]] = None) -> str:
         """
         Execute the agent's main task.
-
-        Args:
-            task: Task description
-            context: Optional context dict with additional info
-
-        Returns:
-            Agent response
         """
         try:
             logger.info(f"Agent {self.name} executing task: {task[:100]}")
@@ -51,7 +50,10 @@ class BaseAgent(ABC):
                 context = {}
 
             prompt = self._build_prompt(task, context)
-            model = self.model or self._select_model(task)
+            
+            # Follow strict routing rules if model is AUTO, otherwise use the agent's primary_model
+            model = self.model if self.model else model_router.route(task, task_type="auto")
+            
             response = await self._call_model(model, prompt)
             result = await self._process_response(response)
 
@@ -79,7 +81,6 @@ class BaseAgent(ABC):
         for tool_name in self.tools:
             tool = tool_manager.get_tool(tool_name)
             if tool:
-                # Provide standard workspace params
                 args = context.get(f"{tool_name}_args", {})
                 if not args and "file_path" in context:
                     args = {"file_path": context["file_path"]}
@@ -118,10 +119,9 @@ Task: {task}
 Please provide a detailed, factual, and actionable response."""
         return prompt
 
-    @abstractmethod
     def _get_system_message(self) -> str:
-        """Get system message for this agent type."""
-        pass
+        """Get system message for this agent type from registry."""
+        return self.system_prompt
 
     def _format_context(self, context: Dict[str, Any]) -> str:
         """Format context dictionary for prompt."""
@@ -133,10 +133,6 @@ Please provide a detailed, factual, and actionable response."""
             lines.append(f"- {key}: {value}")
 
         return "\n".join(lines)
-
-    def _select_model(self, task: str) -> str:
-        """Select appropriate model for task."""
-        return model_router.route(task, task_type="auto")
 
     async def _call_model(self, model: str, prompt: str) -> str:
         """Call the LLM model."""
@@ -163,7 +159,7 @@ Please provide a detailed, factual, and actionable response."""
         return {
             "name": self.name,
             "description": self.description,
-            "model": self.model or "auto-selected",
+            "model": self.model,
             "tools": ", ".join(self.tools),
             "state": str(self.state)
         }
@@ -177,7 +173,7 @@ Please provide a detailed, factual, and actionable response."""
                 context = {}
 
             prompt = self._build_prompt(task, context)
-            model = self.model or self._select_model(task)
+            model = self.model or model_router.route(task, task_type="auto")
 
             async for token in ollama_client.chat_stream(
                 model=model,
@@ -190,4 +186,3 @@ Please provide a detailed, factual, and actionable response."""
         except Exception as e:
             logger.error(f"Streaming error in {self.name}: {e}")
             raise
-

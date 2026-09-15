@@ -67,6 +67,25 @@ class OllamaClient:
             logger.warning(f"Could not fetch models from Ollama at {self.base_url}: {e}")
             return []
 
+    async def unload_other_models(self, target_model: str):
+        """CPU Guard: Unload all models except the target model to save RAM."""
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{self.base_url}/api/ps")
+                if resp.status_code == 200:
+                    running_models = resp.json().get("models", [])
+                    for m in running_models:
+                        m_name = m.get("name")
+                        if m_name and m_name != target_model:
+                            logger.info(f"CPU Guard: Unloading model {m_name}")
+                            # To unload, we call generate with keep_alive=0
+                            await client.post(
+                                f"{self.base_url}/api/generate",
+                                json={"model": m_name, "keep_alive": 0}
+                            )
+        except Exception as e:
+            logger.warning(f"CPU Guard failed: {e}")
+
     async def list_models_detailed(self) -> List[Dict[str, Any]]:
         """List models with metadata like size, family, and capabilities."""
         try:
@@ -164,6 +183,9 @@ class OllamaClient:
         has_images = any(bool(m.get("images")) for m in messages if isinstance(m, dict))
         effective_model = await self.resolve_model(model, require_vision=has_images)
 
+        # CPU Guard
+        await self.unload_other_models(effective_model)
+
         # Pre-check vision capability if images are provided
         if has_images and not self.is_vision_model(effective_model):
             logger.warning(f"Attempted vision call with non-vision model: {effective_model}")
@@ -200,6 +222,7 @@ class OllamaClient:
     async def chat_json(self, model: str, messages: list[dict], options: Optional[dict] = None) -> dict:
         """Chat request expecting structured JSON output."""
         effective_model = await self.resolve_model(model)
+        await self.unload_other_models(effective_model)
         payload = {"model": effective_model, "messages": messages, "format": "json", "stream": False}
         if options:
             payload["options"] = options
@@ -222,6 +245,7 @@ class OllamaClient:
     async def generate(self, model: str, prompt: str, system: Optional[str] = None, options: Optional[dict] = None) -> str:
         """Direct text generation from a prompt."""
         effective_model = await self.resolve_model(model)
+        await self.unload_other_models(effective_model)
         payload = {"model": effective_model, "prompt": prompt, "stream": False}
         if system:
             payload["system"] = system
@@ -243,6 +267,7 @@ class OllamaClient:
     async def generate_with_vision(self, model: str, prompt: str, images: list[str], options: Optional[dict] = None) -> str:
         """Dedicated helper to generate text response from an image prompt."""
         effective_model = await self.resolve_model(model, require_vision=True)
+        await self.unload_other_models(effective_model)
         if not self.is_vision_model(effective_model):
             raise ValueError("Selected model does not support vision. Please select a vision-capable Ollama model.")
 
@@ -259,6 +284,7 @@ class OllamaClient:
         """Streaming chat request - yields individual tokens/chunks."""
         has_images = any(bool(m.get("images")) for m in messages if isinstance(m, dict))
         effective_model = await self.resolve_model(model, require_vision=has_images)
+        await self.unload_other_models(effective_model)
 
         if has_images and not self.is_vision_model(effective_model):
             yield "Selected model does not support vision. Please select a vision-capable Ollama model."
@@ -298,6 +324,7 @@ class OllamaClient:
 
     async def generate_embedding(self, model: str, text: str) -> list[float]:
         """Generate embedding for text using /api/embed or /api/embeddings."""
+        await self.unload_other_models(model)
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(f"{self.base_url}/api/embed", json={"model": model, "input": text})
