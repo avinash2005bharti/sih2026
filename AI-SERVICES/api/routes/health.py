@@ -97,7 +97,7 @@ async def health():
 
     # 5. Memory Architecture Status Probe
     try:
-        from memory.memory_manager import memory_manager
+        from memory import memory_manager
         mem_health = await memory_manager.health_check()
         mem_status_str = mem_health.get("memory", "unknown")
     except Exception as e:
@@ -190,9 +190,114 @@ async def health_models():
 async def health_memory():
     """Check health of all memory subsystems: STM, LTM, Qdrant, Neo4j, Mem0, Embeddings."""
     try:
-        from memory.memory_manager import memory_manager
+        from memory import memory_manager
         status = await memory_manager.health_check()
         return status
     except Exception as e:
         logger.error(f"Memory health check error: {e}")
         return {"memory": "unavailable", "error": str(e)}
+
+
+@router.get("/health/ai", summary="Comprehensive Sovereign AI Enclave Health Check")
+@router.get("/api/health/ai", summary="Comprehensive Sovereign AI Enclave Health Check (compatibility)")
+async def health_ai():
+    """
+    Checks all five local enclave services and SLM specialist models:
+    - Ollama (Local SLMs)
+    - Qdrant (Vector Database)
+    - Neo4j (Knowledge Graph)
+    - MongoDB (Operational & Document Storage)
+    - Valkey (High-Speed Memory & Cache)
+    - Specialist Models (Router, Planner, Coding, Vision, Embedding, Document, Risk, Compliance, Critic)
+    """
+    import socket
+    import pymongo
+    from rag.qdrant_client import qdrant_client
+    from llm.model_registry import model_registry
+
+    # 1. Ollama Check
+    ollama_health = await ollama_client.health_check()
+    ollama_ok = bool(ollama_health.get("available", False))
+    available_models = set(ollama_health.get("models_available", []))
+
+    # 2. Qdrant Check
+    try:
+        qdrant_ok = await qdrant_client.health_check()
+    except Exception:
+        qdrant_ok = False
+
+    # 3. Neo4j Check
+    neo4j_ok = False
+    try:
+        from memory.graph.neo4j_service import neo4j_service
+        drv = neo4j_service._get_driver()
+        if drv is not None:
+            neo4j_ok = True
+        else:
+            # Socket test fallback
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(1.5)
+            s.connect(("localhost", 7687))
+            s.close()
+            neo4j_ok = True
+    except Exception:
+        neo4j_ok = False
+
+    # 4. MongoDB Check
+    mongodb_ok = False
+    try:
+        client = pymongo.MongoClient(settings.MONGO_URI, serverSelectionTimeoutMS=1500, connectTimeoutMS=1500)
+        client.admin.command("ping")
+        mongodb_ok = True
+    except Exception:
+        try:
+            # Try 127.0.0.1 fallback
+            client = pymongo.MongoClient("mongodb://admin:admin@127.0.0.1:27017/sovereign_ai?authSource=admin", serverSelectionTimeoutMS=1500)
+            client.admin.command("ping")
+            mongodb_ok = True
+        except Exception:
+            mongodb_ok = False
+
+    # 5. Valkey Check
+    valkey_ok = False
+    for host in ["127.0.0.1", "localhost"]:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(1.5)
+            s.connect((host, 6379))
+            s.sendall(b"PING\r\n")
+            resp = s.recv(128)
+            s.close()
+            if b"+PONG" in resp:
+                valkey_ok = True
+                break
+        except Exception:
+            pass
+
+    # 6. SLM Models Availability Check
+    def _is_model_available(role: str) -> bool:
+        active_model = model_registry.get_model(role)
+        base = active_model.split(":")[0]
+        return any(active_model in m or m.startswith(base) for m in available_models)
+
+    models_status = {
+        "router": _is_model_available("router"),
+        "planner": _is_model_available("planner"),
+        "coding": _is_model_available("coding"),
+        "vision": _is_model_available("vision"),
+        "embedding": _is_model_available("embedding"),
+        "document": _is_model_available("document"),
+        "risk": _is_model_available("risk"),
+        "compliance": _is_model_available("compliance"),
+        "critic": _is_model_available("critic"),
+    }
+
+    return {
+        "ollama": ollama_ok,
+        "qdrant": qdrant_ok,
+        "neo4j": neo4j_ok,
+        "mongodb": mongodb_ok,
+        "valkey": valkey_ok,
+        "models": models_status
+    }
+

@@ -78,26 +78,17 @@ const ChatInputBar = ({ inputRef, onSend, initialValue = '' }) => {
   const handleFileChange = (e) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (file.type.startsWith('image/')) {
-        const reader = new FileReader();
-        reader.onload = () => {
-          setAttachment({
-            file,
-            name: file.name,
-            size: (file.size / 1024).toFixed(1) + ' KB',
-            type: file.type,
-            base64: reader.result,
-          });
-        };
-        reader.readAsDataURL(file);
-      } else {
+      const reader = new FileReader();
+      reader.onload = () => {
         setAttachment({
           file,
           name: file.name,
           size: (file.size / 1024).toFixed(1) + ' KB',
-          type: file.type || 'document',
+          type: file.type || 'application/octet-stream',
+          base64: reader.result,
         });
-      }
+      };
+      reader.readAsDataURL(file);
     }
   };
 

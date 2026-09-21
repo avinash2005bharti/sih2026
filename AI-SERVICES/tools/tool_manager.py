@@ -51,27 +51,70 @@ class ToolManager:
         self._tools[name] = tool_func
 
     def get_tool(self, name: str) -> Optional[Any]:
-        """Retrieve a tool by name."""
-        return self._tools.get(name)
+        """Retrieve a tool by name or alias."""
+        if not name or not isinstance(name, str):
+            return None
+        if name in self._tools:
+            return self._tools[name]
+        cleaned = name.lower().strip().replace("-", "_")
+        if cleaned in self._tools:
+            return self._tools[cleaned]
+        cleaned_dot = name.lower().strip().replace("_", ".")
+        if cleaned_dot in self._tools:
+            return self._tools[cleaned_dot]
+        try:
+            from tools.tool_registry import central_tool_registry
+            t = central_tool_registry.get_tool(name)
+            if t:
+                return t
+        except ImportError:
+            pass
+        try:
+            from tools.agent_tools import resolve_tool
+            return resolve_tool(name)
+        except ImportError:
+            pass
+        return None
 
     def list_tools(self) -> List[str]:
-        """List names of all registered MCP tools."""
-        return list(self._tools.keys())
+        """List names of all registered MCP and sovereign tools."""
+        names = set(self._tools.keys())
+        try:
+            from tools.tool_registry import central_tool_registry
+            names.update(central_tool_registry.list_tools())
+        except ImportError:
+            pass
+        return sorted(list(names))
+
+    def get_schemas(self) -> List[Dict[str, Any]]:
+        """Return tool schemas for planning and specialist agents."""
+        try:
+            from tools.tool_registry import central_tool_registry
+            return central_tool_registry.list_tool_definitions()
+        except ImportError:
+            return [{"name": name} for name in self._tools.keys()]
 
     def get_tools_prompt_description(self, tool_names: Optional[List[str]] = None) -> str:
         """Format a concise text description of available tools suitable for LLM system prompts."""
-        targets = tool_names if tool_names is not None else self._tools.keys()
-        lines = ["You have access to the following sovereign MCP tools:"]
+        targets = tool_names if tool_names is not None else self.list_tools()
+        lines = ["You have access to the following sovereign tools:"]
         for name in targets:
-            if name in self._tools:
-                lines.append(f"- `{name}`")
+            lines.append(f"- `{name}`")
         return "\n".join(lines)
 
     async def execute_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Safely execute a tool with timing, argument validation, and audit recording."""
+        # 1. Try central tool registry first for standardized tools
+        try:
+            from tools.tool_registry import central_tool_registry
+            if central_tool_registry.get_tool(name):
+                return await central_tool_registry.execute_tool(name, arguments)
+        except ImportError:
+            pass
+
         tool_func = self.get_tool(name)
         if not tool_func:
-            err = f"Unknown tool: '{name}'. Available: {list(self._tools.keys())}"
+            err = f"Unknown tool: '{name}'. Available: {self.list_tools()}"
             logger.error(err)
             return {"success": False, "error": err, "tool": name, "exit_code": 1}
 
@@ -79,8 +122,20 @@ class ToolManager:
         logger.info(f"Executing MCP tool '{name}' with arguments: {arguments}")
 
         try:
-            # We assume tool_func is an async function
-            result = await tool_func(**arguments)
+            import inspect
+            if hasattr(tool_func, "arun"):
+                result = await tool_func.arun(**arguments)
+            elif hasattr(tool_func, "invoke"):
+                result = tool_func.invoke(arguments)
+                if isinstance(result, str):
+                    try:
+                        result = json.loads(result)
+                    except Exception:
+                        result = {"result": result, "success": True}
+            elif inspect.iscoroutinefunction(tool_func):
+                result = await tool_func(**arguments)
+            else:
+                result = tool_func(**arguments)
             duration = time.time() - start_time
 
             res_obj = result if isinstance(result, dict) else {"output": str(result), "success": True}

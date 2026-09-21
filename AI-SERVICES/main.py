@@ -2,16 +2,18 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 import asyncio
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from fastapi.openapi.utils import get_openapi
+import urllib.parse
 
 from core.config import settings
 from core.logging import logger
 from core.hardware import detect_hardware
 from llm.ollama_client import ollama_client
-from api.routes import health, chat, models, documents, vision, tasks, memory_routes
+from api.routes import health, chat, models, documents, vision, tasks, memory_routes, network
 
 
 @asynccontextmanager
@@ -96,15 +98,103 @@ app.add_middleware(
 app.include_router(health.router, tags=["health"])
 app.include_router(chat.router, tags=["chat"])
 app.include_router(models.router, prefix="/api", tags=["models"])
-app.include_router(documents.router, prefix="/api", tags=["documents"])
+app.include_router(documents.router, tags=["documents"])
 app.include_router(vision.router, tags=["vision"])
 app.include_router(tasks.router, tags=["tasks"])
 app.include_router(memory_routes.router, prefix="/api/memory", tags=["memory"])
+app.include_router(network.router, tags=["network"])
 
-# Mount workspace for generated files (PDFs, reports, artifacts)
+# Workspace files & generated sovereign artifacts endpoint
 workspace_dir = (Path(__file__).parent / "workspace").resolve()
 workspace_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/workspace", StaticFiles(directory=str(workspace_dir)), name="workspace")
+reports_dir = (workspace_dir / "reports").resolve()
+reports_dir.mkdir(parents=True, exist_ok=True)
+
+
+@app.api_route("/workspace/{file_path:path}", methods=["GET", "HEAD"], summary="Serve workspace artifacts and reports")
+async def serve_workspace_file(file_path: str):
+    """
+    Serve generated reports, PDFs, Excel sheets, and documents from workspace or uploads.
+    Handles relative paths ('reports/abc.pdf'), filenames ('abc.pdf'),
+    or URL-encoded absolute paths ('C%3A/Users/.../workspace/reports/abc.pdf').
+    """
+    try:
+        raw = urllib.parse.unquote(file_path).strip().replace("\\", "/")
+
+        candidates = []
+
+        # 1. Direct absolute path check (e.g. if C:/... was URL-encoded)
+        direct_p = Path(raw)
+        if direct_p.is_absolute() and direct_p.exists() and direct_p.is_file():
+            candidates.append(direct_p)
+
+        # 2. Path relative to workspace_dir
+        cleaned = raw
+        if "workspace/" in cleaned:
+            cleaned = cleaned.split("workspace/", 1)[-1]
+        elif "reports/" in cleaned:
+            cleaned = "reports/" + cleaned.split("reports/", 1)[-1]
+
+        ws_candidate = (workspace_dir / cleaned.lstrip("/")).resolve()
+        if ws_candidate.exists() and ws_candidate.is_file():
+            candidates.append(ws_candidate)
+
+        # 3. Check inside workspace_dir / reports
+        filename_only = Path(raw).name
+        rep_candidate = (workspace_dir / "reports" / filename_only).resolve()
+        if rep_candidate.exists() and rep_candidate.is_file():
+            candidates.append(rep_candidate)
+
+        # 4. Check in BACKEND uploads
+        uploads_doc = (Path(__file__).parent.parent / "BACKEND" / "uploads" / "documents" / filename_only).resolve()
+        if uploads_doc.exists() and uploads_doc.is_file():
+            candidates.append(uploads_doc)
+
+        # 5. Check direct workspace root
+        ws_root_candidate = (workspace_dir / filename_only).resolve()
+        if ws_root_candidate.exists() and ws_root_candidate.is_file():
+            candidates.append(ws_root_candidate)
+
+        for target in candidates:
+            if target.exists() and target.is_file():
+                ext = target.suffix.lower()
+                media_type = "application/octet-stream"
+                if ext == ".pdf":
+                    media_type = "application/pdf"
+                elif ext == ".xlsx":
+                    media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                elif ext == ".docx":
+                    media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                elif ext == ".csv":
+                    media_type = "text/csv; charset=utf-8"
+                elif ext in [".txt", ".md"]:
+                    media_type = "text/plain; charset=utf-8"
+                elif ext == ".json":
+                    media_type = "application/json"
+                elif ext == ".svg":
+                    media_type = "image/svg+xml"
+                elif ext == ".png":
+                    media_type = "image/png"
+                elif ext in [".jpg", ".jpeg"]:
+                    media_type = "image/jpeg"
+
+                return FileResponse(
+                    path=str(target),
+                    filename=target.name,
+                    media_type=media_type,
+                    headers={
+                        "Content-Disposition": f"inline; filename=\"{target.name}\"",
+                        "Access-Control-Allow-Origin": "*",
+                    }
+                )
+
+        logger.warning(f"[WORKSPACE_SERVE] File not found: raw='{raw}', searched: {[str(c) for c in candidates]}")
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[WORKSPACE_SERVE] Error serving file '{file_path}': {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Root endpoint

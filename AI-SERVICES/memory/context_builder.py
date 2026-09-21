@@ -25,6 +25,7 @@ class QueryIntent(str, Enum):
     ARTIFACT_QUERY = "artifact_query"
     EXECUTION_QUERY = "execution_query"
     LONG_TERM_MEMORY = "long_term_memory"
+    DOCUMENT_METADATA_QUERY = "document_metadata_query"
     DOCUMENT_RAG = "document_rag"
     GRAPH_QUERY = "graph_query"
     CONTINUATION_OR_REFERENCE = "continuation_or_reference"
@@ -45,6 +46,7 @@ class EnrichedContext:
     ltm_context: str = ""
     graph_context: str = ""
     document_context: str = ""
+    repo_documents: List[Dict[str, Any]] = field(default_factory=list)
     observability: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -132,7 +134,24 @@ class ContextBuilder:
         if any(kw in q for kw in graph_keywords):
             return QueryIntent.GRAPH_QUERY
 
-        # 8. Document RAG queries
+        # 8. Document repository queries (document count, list documents, document section)
+        doc_repo_keywords = [
+            "how many document", "how many documents", "count document", "count documents",
+            "number of documents", "what documents", "which documents", "my documents",
+            "document section", "document sections", "in document section", "in my document",
+            "in my documents", "list documents", "show documents", "all documents",
+            "uploaded documents", "find documents", "documents in my workspace",
+            "documents in workspace", "documents do i have", "documents uploaded",
+            "give me document", "give me the document", "give me any document", "give document",
+            "get document", "read document", "view document", "display document", "show document",
+            "show me document", "fetch document", "any document", "provide document", "open document",
+            "access document", "see document", "see the document", "what is in the document",
+            "what is in my document", "check documents", "check my documents", "check the document"
+        ]
+        if any(kw in q for kw in doc_repo_keywords):
+            return QueryIntent.DOCUMENT_METADATA_QUERY
+
+        # 9. Document RAG queries (content search within documents)
         doc_keywords = ["sop", "manual", "handbook", "policy", "uploaded document", "section in"]
         if any(kw in q for kw in doc_keywords):
             return QueryIntent.DOCUMENT_RAG
@@ -143,6 +162,8 @@ class ContextBuilder:
         self,
         conversation_id: str,
         user_id: Optional[str] = None,
+        is_admin: bool = False,
+        user_role: Optional[str] = None,
         query: str = "",
         agent_id: Optional[str] = None,
         system_prompt: Optional[str] = None,
@@ -155,7 +176,7 @@ class ContextBuilder:
         """
         eff_query = (query or current_query or "").strip()
         intent = self.classify_intent(eff_query)
-        logger.info(f"[CONTEXT] Building context | conv={conversation_id} | user={user_id} | intent={intent.value} | query='{eff_query}'")
+        logger.info(f"[CONTEXT] Building context | conv={conversation_id} | user={user_id} | is_admin={is_admin} | intent={intent.value} | query='{eff_query}'")
 
         history_messages: List[Dict[str, str]] = []
         artifacts: List[Dict[str, Any]] = []
@@ -244,22 +265,70 @@ class ContextBuilder:
                 logger.debug(f"[CONTEXT] LTM retrieval note: {ltm_err}")
 
         # ---------------------------------------------------------------------
-        # 6. Document RAG.  Previously this branch was never implemented, so
-        # documents could be indexed and searched by an endpoint but their
-        # evidence never reached the model answering a chat request.
+        # 6. Document Repository & Document Section Metadata
         # ---------------------------------------------------------------------
-        if intent in [QueryIntent.DOCUMENT_RAG, QueryIntent.CONTINUATION_OR_REFERENCE] or any(
-            word in eff_query.lower() for word in ["report", "document", "inspection", "sop", "manual", "policy"]
+        repo_docs: List[Dict[str, Any]] = []
+        doc_interest_keywords = [
+            "document", "documents", "sop", "manual", "policy", "handbook", "procedure",
+            "report", "reference", "uploaded", "database", "inspect", "audit", "guideline",
+            "instruction", "file", "files", "spec", "specification", "turbine", "safety", "fmea",
+            "how many document", "count document", "document section", "my documents", "list documents",
+            "pdf", "generate pdf", "create pdf", "make pdf", "same data", "this data", "that data",
+            "data", "excel", "summary", "summarize", "export"
+        ]
+        # Always fetch repo docs if user_id or conversation_id is present to give models complete document awareness
+        is_doc_relevant = (
+            bool(user_id or conversation_id)
+            or intent in [
+                QueryIntent.DOCUMENT_METADATA_QUERY,
+                QueryIntent.DOCUMENT_RAG,
+                QueryIntent.CONTINUATION_OR_REFERENCE,
+                QueryIntent.GENERAL_TASK,
+                QueryIntent.ARTIFACT_QUERY
+            ]
+            or any(kw in eff_query.lower() for kw in doc_interest_keywords)
+        )
+        if is_doc_relevant:
+            try:
+                from rag.document_store import document_store
+                # Agents require unrestricted visibility into the Document Section repository
+                repo_docs = document_store.list_documents(limit=100, user_id=user_id, is_admin=True)
+                logger.info(f"[CONTEXT] Fetched {len(repo_docs)} repository documents for query context (user={user_id}, is_admin=True)")
+            except Exception as repo_err:
+                logger.warning(f"[CONTEXT] Document store list warning: {repo_err}")
+
+        # ---------------------------------------------------------------------
+        # 7. Document RAG Evidence Retrieval
+        # ---------------------------------------------------------------------
+        if intent not in [QueryIntent.DOCUMENT_METADATA_QUERY, QueryIntent.ARTIFACT_QUERY, QueryIntent.EXECUTION_QUERY] and (
+            intent in [QueryIntent.DOCUMENT_RAG, QueryIntent.CONTINUATION_OR_REFERENCE, QueryIntent.GENERAL_TASK] or any(
+                word in eff_query.lower() for word in doc_interest_keywords
+            )
         ):
             try:
                 from rag.retriever import rag_retriever
-                results = await rag_retriever.retrieve(eff_query, top_k=4, score_threshold=0.35)
+                allowed_doc_ids = None
+
+                search_q = eff_query
+                ref_keywords = ["same data", "this data", "that data", "this document", "the document", "pdf about", "generate pdf"]
+                if any(rw in eff_query.lower() for rw in ref_keywords) and repo_docs:
+                    top_doc = repo_docs[0]
+                    search_q = top_doc.get("name") or top_doc.get("originalName") or eff_query
+
+                results = await rag_retriever.retrieve(
+                    search_q,
+                    top_k=6,
+                    score_threshold=0.15,
+                    allowed_doc_ids=allowed_doc_ids,
+                    user_id=user_id,
+                    is_admin=True
+                )
                 if results:
                     evidence = []
                     for index, result in enumerate(results, start=1):
                         metadata = result.get("metadata") or {}
-                        source = metadata.get("source") or metadata.get("filename") or "uploaded document"
-                        page = metadata.get("page") or metadata.get("page_number")
+                        source = metadata.get("source") or metadata.get("filename") or result.get("filename") or "uploaded document"
+                        page = metadata.get("page") or result.get("page")
                         label = f"{source}" + (f" — page {page}" if page is not None else "")
                         evidence.append(f"[Source {index}: {label}; score={result.get('score', 0):.3f}]\n{result.get('text', '')}")
                     doc_ctx = "\n\n".join(evidence)
@@ -267,7 +336,7 @@ class ContextBuilder:
                 logger.warning(f"[CONTEXT] RAG retrieval warning: {rag_err}")
 
         # ---------------------------------------------------------------------
-        # 7. Knowledge Graph (Neo4j) - Targeted retrieval only
+        # 8. Knowledge Graph (Neo4j) - Targeted retrieval only
         # ---------------------------------------------------------------------
         if intent == QueryIntent.GRAPH_QUERY:
             try:
@@ -294,6 +363,76 @@ class ContextBuilder:
         )
 
         prompt_sections = [base_sys]
+
+        # Prioritize Document Repository state directly after base system prompt
+        if repo_docs:
+            doc_lines = []
+            doc_content_sections = []
+            for i, d in enumerate(repo_docs, start=1):
+                name = d.get("name") or d.get("originalName") or "Untitled"
+                dtype = d.get("documentType") or "unknown"
+                status = d.get("processingStatus") or "processed"
+                chunks = d.get("metadata", {}).get("chunksCount", 0) if isinstance(d.get("metadata"), dict) else 0
+                doc_id = str(d.get("document_id") or d.get("_id") or d.get("id") or "")
+                doc_lines.append(f"{i}. \"{name}\" (ID: {doc_id}, Type: {dtype}, Status: {status}, Chunks: {chunks})")
+
+                # Extract content preview for top 10 documents so model has complete visibility
+                if i <= 10:
+                    raw_content = d.get("extractedText") or ""
+                    if not raw_content or len(raw_content.strip()) < 50:
+                        fpath = d.get("filePath") or d.get("file_path") or name
+                        try:
+                            from rag.document_store import document_store
+                            raw_content = document_store._read_full_document_content(fpath)
+                        except Exception:
+                            pass
+                    clean_content = (raw_content or "").strip()
+                    if clean_content:
+                        if len(clean_content) > 3500:
+                            clean_content = clean_content[:3500] + "\n... [Content truncated for prompt; complete text accessible via get_document_content or read_file]"
+                        doc_content_sections.append(f"=== Document [{i}]: \"{name}\" (ID: {doc_id}, Type: {dtype}) ===\nEXTRACTED DOCUMENT CONTENT:\n{clean_content}")
+
+            content_blocks_text = "\n\n".join(doc_content_sections)
+
+            if intent == QueryIntent.DOCUMENT_METADATA_QUERY:
+                docs_summary = (
+                    f"### Workspace Document Repository (Document Section):\n"
+                    f"- Total Documents in Workspace: {len(repo_docs)}\n"
+                    f"- Document Details:\n" + "\n".join(doc_lines) + "\n\n"
+                    f"CRITICAL RESPONSE DIRECTIVE:\n"
+                    f"- The user is asking about the documents in their document section or workspace.\n"
+                    f"- You and all autonomous agents have complete, real-time access to the Document Section and all its data.\n"
+                    f"- Answer directly that there are {len(repo_docs)} document(s) in their document section, and list their names, IDs, types, and statuses clearly.\n"
+                    f"- You have available tools: `list_documents`, `get_document`, `get_document_content`, `search_database_documents`.\n"
+                    f"- Do NOT call `list_files` or ask the user for directory paths.\n"
+                    f"- Never state that you cannot see, track, or access documents in the workspace."
+                )
+            else:
+                docs_summary = (
+                    f"### Available Database & Workspace Documents for Reference:\n"
+                    f"- Total Documents Available: {len(repo_docs)}\n"
+                    f"- Document Catalog:\n" + "\n".join(doc_lines) + "\n\n"
+                    f"### Attached Workspace Documents & Extracted Content:\n"
+                    f"{content_blocks_text if content_blocks_text else 'No text extracted yet.'}\n\n"
+                    f"CRITICAL DOCUMENT REFERENCE & GENERATION DIRECTIVE:\n"
+                    f"- You and all agents have full, direct visibility and read access to all uploaded documents and reference materials shown above.\n"
+                    f"- Use `get_document_content` or `get_document` to fetch full unabridged text or metadata for any document by its name or ID.\n"
+                    f"- When instructed to generate a PDF, report, or document based on 'same data', 'this data', or the uploaded document:\n"
+                    f"  1. FIRST generate the complete, comprehensive report content (Executive Summary, Specifications, Operating Limits, Tables, Findings) directly from the extracted document content above.\n"
+                    f"  2. Then fit and compile that generated content into an official PDF deliverable using `create_pdf(file_name=..., title=..., content=...)`.\n"
+                    f"- Under NO circumstances should you state that you are unable to generate or ask the user to specify details when source documents are present above. Synthesize the deliverable directly from the data!"
+                )
+            prompt_sections.append(docs_summary)
+        elif intent == QueryIntent.DOCUMENT_METADATA_QUERY or is_doc_relevant:
+            prompt_sections.append(
+                "### Workspace Document Repository (Document Section):\n"
+                "- Total Documents in Workspace: 0 (No documents uploaded yet).\n\n"
+                "CRITICAL RESPONSE DIRECTIVE:\n"
+                "- The user has requested or asked about documents, but there are currently 0 documents in their workspace repository.\n"
+                "- State clearly, politely, and directly that there are 0 documents uploaded or available in the workspace.\n"
+                "- Inform the user that they can upload documents via the Documents section or chat attachment.\n"
+                "- Under NO circumstances should you fabricate, hallucinate, or synthesize a Standard Operating Procedure (SOP), industrial manual, or fake document content."
+            )
 
         if summary:
             prompt_sections.append(f"### Rolling Conversation Summary:\n{summary}")
@@ -345,6 +484,7 @@ class ContextBuilder:
             "has_summary": bool(summary),
             "has_ltm": bool(ltm_ctx),
             "has_graph": bool(graph_ctx),
+            "repo_documents_count": len(repo_docs),
             "rag_chunks_count": doc_ctx.count("[Source "),
             "total_context_chars": len(final_system_prompt)
         }
@@ -354,6 +494,7 @@ class ContextBuilder:
             f"[STM] messages={len(history_messages)} | "
             f"[ARTIFACTS] results={len(artifacts)} | "
             f"[EXECUTIONS] results={len(executions)} | "
+            f"[DOCS] repo_docs={len(repo_docs)} | "
             f"[MEM0/LTM] has_ltm={bool(ltm_ctx)} | "
             f"[NEO4J] has_graph={bool(graph_ctx)} | "
             f"[CONTEXT] assembled successfully | chars={len(final_system_prompt)}"
@@ -371,6 +512,7 @@ class ContextBuilder:
             ltm_context=ltm_ctx,
             graph_context=graph_ctx,
             document_context=doc_ctx,
+            repo_documents=repo_docs,
             observability=observability
         )
 

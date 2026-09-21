@@ -21,9 +21,9 @@ class KnowledgeSearchTool(BaseTool):
         "required": ["query"]
     }
 
-    async def arun(self, query: str, top_k: int = 4, **kwargs) -> str:
+    async def arun(self, query: str, top_k: int = 4, user_id: Optional[str] = None, is_admin: bool = False, **kwargs) -> str:
         try:
-            logger.info(f"KnowledgeSearchTool querying: '{query}' (top_k={top_k})")
+            logger.info(f"KnowledgeSearchTool querying: '{query}' (top_k={top_k}, user={user_id}, is_admin={is_admin})")
             
             try:
                 initialized = await rag_retriever.initialize()
@@ -38,14 +38,21 @@ class KnowledgeSearchTool(BaseTool):
                     "results": []
                 })
 
-            results = await rag_retriever.retrieve(query=query, top_k=top_k)
+            results = await rag_retriever.retrieve(
+                query=query,
+                top_k=top_k,
+                user_id=user_id,
+                is_admin=is_admin
+            )
 
             formatted = []
             for r in results:
                 formatted.append({
                     "score": round(r.get("score", 0.0), 4),
                     "text": r.get("text", "").strip(),
-                    "source": r.get("metadata", {}).get("source", "unknown")
+                    "source": r.get("metadata", {}).get("source", "unknown"),
+                    "filename": r.get("filename", "unknown"),
+                    "document_id": r.get("document_id", "")
                 })
 
             return json.dumps({
@@ -101,20 +108,37 @@ class IndexDocumentTool(BaseTool):
             return json.dumps({"success": False, "error": str(e)})
 
 
+import asyncio
+import concurrent.futures
+
+
+def run_coro_sync(coro):
+    """Safely execute async coroutine from synchronous LangChain tool wrapper."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(asyncio.run, coro).result()
+    else:
+        return asyncio.run(coro)
+
+
 @tool
-async def search_knowledge_base(query: str, top_k: int = 4) -> str:
+def search_knowledge_base(query: str, top_k: int = 4, user_id: Optional[str] = None, is_admin: Optional[bool] = None) -> str:
     """
     Search indexed sovereign technical documentation, manuals, incident reports, and regulations
     using semantic vector search. Returns the most relevant excerpts with similarity scores.
     """
     t = KnowledgeSearchTool()
-    return await t.arun(query=query, top_k=top_k)
+    return run_coro_sync(t.arun(query=query, top_k=top_k, user_id=user_id, is_admin=bool(is_admin)))
 
 
 @tool
-async def index_document(title: str, content: str) -> str:
+def index_document(title: str, content: str) -> str:
     """
     Index text or notes into the sovereign vector database so it can be retrieved later using semantic search.
     """
     t = IndexDocumentTool()
-    return await t.arun(title=title, content=content)
+    return run_coro_sync(t.arun(title=title, content=content))

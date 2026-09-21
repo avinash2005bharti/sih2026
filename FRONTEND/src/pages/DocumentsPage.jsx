@@ -11,8 +11,14 @@ import {
   FileCheck,
   HardDrive,
   Download,
+  Eye,
+  Layers,
+  Database,
+  Lock,
+  Shield
 } from 'lucide-react';
 import documentApi from '../api/documentApi';
+import { useAuth } from '../context/AuthContext';
 import Button from '../components/common/Button';
 import Card from '../components/common/Card';
 import Badge from '../components/common/Badge';
@@ -33,9 +39,12 @@ const DOC_TYPES = [
 ];
 
 const DocumentsPage = () => {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin' || user?.isAdmin;
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [selectedDoc, setSelectedDoc] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -44,7 +53,6 @@ const DocumentsPage = () => {
     name: '',
     documentType: 'manual',
     storageType: 'local',
-    filePath: '',
   });
   const [selectedFile, setSelectedFile] = useState(null);
 
@@ -66,6 +74,25 @@ const DocumentsPage = () => {
     loadDocuments();
   }, []);
 
+  // Poll while any documents are still in 'processing' status
+  useEffect(() => {
+    const hasProcessing = documents.some((d) => d.processingStatus === 'processing');
+    if (!hasProcessing) return;
+
+    const timer = setInterval(async () => {
+      try {
+        const res = await documentApi.getDocuments();
+        if (res && res.documents) {
+          setDocuments(res.documents);
+        }
+      } catch (err) {
+        // Silent catch during background polling
+      }
+    }, 3000);
+
+    return () => clearInterval(timer);
+  }, [documents]);
+
   const handleFilePick = (e) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -73,14 +100,13 @@ const DocumentsPage = () => {
       setFormData((prev) => ({
         ...prev,
         name: prev.name || file.name.replace(/\.[^/.]+$/, ''),
-        filePath: `/uploads/confidential/${file.name}`,
       }));
     }
   };
 
   const handleUploadSubmit = async (e) => {
     e.preventDefault();
-    if (!formData.name || (!selectedFile && !formData.filePath)) {
+    if (!formData.name || !selectedFile) {
       setError('Please provide document title and select a file');
       return;
     }
@@ -88,57 +114,55 @@ const DocumentsPage = () => {
     setSubmitting(true);
     setError(null);
     try {
-      const payload = {
-        name: formData.name,
-        originalName: selectedFile?.name || `${formData.name}.pdf`,
-        mimeType: selectedFile?.type || 'application/pdf',
-        fileSize: selectedFile?.size || 1048576,
-        filePath: formData.filePath || `/uploads/${formData.name}.pdf`,
-        storageType: formData.storageType,
-        documentType: formData.documentType,
-      };
+      const formPayload = new FormData();
+      formPayload.append('file', selectedFile);
+      formPayload.append('name', formData.name);
+      formPayload.append('documentType', formData.documentType);
+      formPayload.append('storageType', formData.storageType);
 
-      const res = await documentApi.uploadDocument(payload);
+      const res = await documentApi.uploadDocument(formPayload);
       if (res && res.document) {
-        setDocuments((prev) => [res.document, ...prev]);
+        setDocuments((prev) => [res.document, ...prev.filter((d) => d._id !== res.document._id)]);
         setIsUploadModalOpen(false);
         setSelectedFile(null);
         setFormData({
           name: '',
           documentType: 'manual',
           storageType: 'local',
-          filePath: '',
         });
       }
     } catch (err) {
-      setError(err.message || 'Failed to upload document');
+      setError(err.message || 'Failed to upload and vectorize document');
     } finally {
       setSubmitting(false);
     }
   };
 
   const handleDelete = async (docId) => {
-    if (!confirm('Are you sure you want to delete this document from encrypted storage?')) return;
+    if (!confirm('Are you sure you want to delete this document from encrypted storage and Qdrant vector index?')) return;
     try {
       await documentApi.deleteDocument(docId);
       setDocuments((prev) => prev.filter((d) => d._id !== docId));
+      if (selectedDoc?._id === docId) setSelectedDoc(null);
     } catch (err) {
       alert(err.message || 'Failed to delete document');
     }
   };
 
-  const getStatusBadge = (status) => {
+  const getStatusBadge = (doc) => {
+    const status = doc.processingStatus || 'uploaded';
+    const chunks = doc.metadata?.chunksCount;
     switch (status) {
       case 'processed':
         return (
           <Badge variant="sovereign" size="sm" dot>
-            Processed
+            Processed {chunks !== undefined && chunks > 0 ? `(${chunks} chunks)` : ''}
           </Badge>
         );
       case 'processing':
         return (
           <Badge variant="warning" size="sm" dot>
-            Parsing OCR
+            Chunking & Ingesting...
           </Badge>
         );
       case 'failed':
@@ -166,25 +190,34 @@ const DocumentsPage = () => {
             Confidential Document Repository
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            Store, vectorize, and analyze air-gapped technical manuals, P&IDs, blueprints, and SOP directives.
+            Store, chunk, and vectorize technical manuals, blueprints, SOP directives, and plant reports into Qdrant for Autonomous Agent retrieval.
           </p>
         </div>
-        <Button
-          onClick={() => setIsUploadModalOpen(true)}
-          icon={Upload}
-          className="self-start sm:self-auto"
-        >
-          Upload Document
-        </Button>
+        <div className="flex items-center gap-2.5 self-start sm:self-auto">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={loadDocuments}
+            className="text-xs"
+          >
+            Refresh
+          </Button>
+          <Button
+            onClick={() => setIsUploadModalOpen(true)}
+            icon={Upload}
+          >
+            Upload Document
+          </Button>
+        </div>
       </div>
 
       {loading ? (
-        <Loader text="Loading encrypted document index..." />
+        <Loader text="Loading encrypted document index and vector status..." />
       ) : documents.length === 0 ? (
         <EmptyState
           icon={FileText}
           title="No documents uploaded yet"
-          description="Upload technical specs, plant layouts, or operating procedures to enable offline Graph RAG analysis."
+          description="Upload technical specs, plant layouts, or operating procedures to enable offline Graph RAG analysis and Agent CRUD actions."
           actionText="Upload First Document"
           onAction={() => setIsUploadModalOpen(true)}
         />
@@ -196,8 +229,9 @@ const DocumentsPage = () => {
                 <tr>
                   <th className="px-4 py-3">Document</th>
                   <th className="px-4 py-3">Type</th>
+                  <th className="px-4 py-3">Access & Visibility</th>
                   <th className="px-4 py-3">Storage</th>
-                  <th className="px-4 py-3">Size</th>
+                  <th className="px-4 py-3">Qdrant Vectors</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3">Uploaded</th>
                   <th className="px-4 py-3 text-right">Action</th>
@@ -212,7 +246,7 @@ const DocumentsPage = () => {
                           <FileText className="w-4 h-4" />
                         </div>
                         <div>
-                          <div className="font-semibold text-slate-900">
+                          <div className="font-semibold text-slate-900 cursor-pointer hover:text-blue-600" onClick={() => setSelectedDoc(doc)}>
                             {doc.name}
                           </div>
                           <div className="text-[10px] text-slate-400 font-mono">
@@ -225,30 +259,62 @@ const DocumentsPage = () => {
                       {doc.documentType || 'PDF'}
                     </td>
                     <td className="px-4 py-3">
+                      {doc.isUploadedByAdmin ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200" title="Admin Policy: Available to all clients (read-only)">
+                          <Shield className="w-3 h-3 text-emerald-600" />
+                          Admin Policy (Global Read-Only)
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-indigo-50 text-indigo-700 border border-indigo-200" title="Client Document: Visible only to Admin and Uploader">
+                          <Lock className="w-3 h-3 text-indigo-500" />
+                          {isAdmin ? `Client: ${doc.uploaderInfo?.name || doc.uploaderInfo?.email || 'Confidential'}` : 'Private Upload'}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
                       <span className="inline-flex items-center gap-1 text-[11px] font-mono text-slate-600">
                         <HardDrive className="w-3 h-3 text-slate-400" />
                         {doc.storageType || 'local'}
                       </span>
                     </td>
-                    <td className="px-4 py-3 font-mono text-[11px] text-slate-500">
-                      {doc.fileSize
-                        ? `${(doc.fileSize / (1024 * 1024)).toFixed(2)} MB`
-                        : '1.2 MB'}
+                    <td className="px-4 py-3 font-mono text-[11px] text-slate-600">
+                      <span className="inline-flex items-center gap-1">
+                        <Database className="w-3 h-3 text-blue-500" />
+                        {doc.metadata?.chunksCount !== undefined ? `${doc.metadata.chunksCount} chunks` : 'N/A'}
+                      </span>
                     </td>
                     <td className="px-4 py-3">
-                      {getStatusBadge(doc.processingStatus)}
+                      {getStatusBadge(doc)}
                     </td>
                     <td className="px-4 py-3 text-slate-500 text-[11px] font-mono">
                       {new Date(doc.createdAt || Date.now()).toLocaleDateString()}
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <button
-                        onClick={() => handleDelete(doc._id)}
-                        className="p-1.5 text-slate-400 hover:text-rose-600 rounded transition-colors"
-                        title="Delete Document"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          onClick={() => setSelectedDoc(doc)}
+                          className="p-1.5 text-slate-400 hover:text-blue-600 rounded transition-colors"
+                          title="View Document Details & Chunks"
+                        >
+                          <Eye className="w-4 h-4" />
+                        </button>
+                        {doc.canModify === false || (!isAdmin && doc.isUploadedByAdmin) ? (
+                          <span
+                            className="p-1.5 text-slate-300 cursor-not-allowed"
+                            title="Admin policy: Global documents cannot be modified or deleted by clients"
+                          >
+                            <Lock className="w-4 h-4 text-amber-500" />
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => handleDelete(doc._id)}
+                            className="p-1.5 text-slate-400 hover:text-rose-600 rounded transition-colors"
+                            title="Delete Document"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -258,12 +324,91 @@ const DocumentsPage = () => {
         </Card>
       )}
 
+      {/* View Document Details Modal */}
+      {selectedDoc && (
+        <Modal
+          isOpen={Boolean(selectedDoc)}
+          onClose={() => setSelectedDoc(null)}
+          title={selectedDoc.name}
+          subtitle={`Type: ${selectedDoc.documentType?.toUpperCase()} | Chunks in Qdrant: ${selectedDoc.metadata?.chunksCount || 0}`}
+          icon={FileText}
+        >
+          <div className="space-y-4 text-xs">
+            <div className="grid grid-cols-2 gap-3 p-3 bg-slate-50 rounded-lg font-mono text-[11px]">
+              <div>
+                <span className="text-slate-400">Document ID:</span>
+                <p className="font-semibold text-slate-800 break-all">{selectedDoc._id}</p>
+              </div>
+              <div>
+                <span className="text-slate-400">Status:</span>
+                <p className="mt-0.5">{getStatusBadge(selectedDoc)}</p>
+              </div>
+              <div>
+                <span className="text-slate-400">Governance & Access:</span>
+                <p className="font-semibold text-slate-800">
+                  {selectedDoc.isUploadedByAdmin ? 'Admin Policy (All Clients Read-Only)' : 'Confidential (Admin & Uploader)'}
+                </p>
+              </div>
+              <div>
+                <span className="text-slate-400">Uploaded By:</span>
+                <p className="font-semibold text-slate-800">
+                  {selectedDoc.uploaderInfo?.name 
+                    ? `${selectedDoc.uploaderInfo.name} (${selectedDoc.uploaderInfo.role || 'client'})` 
+                    : (selectedDoc.isUploadedByAdmin ? 'Admin' : 'Client')}
+                  {selectedDoc.uploaderInfo?.email && <span className="block text-[10px] text-slate-500 font-normal">{selectedDoc.uploaderInfo.email}</span>}
+                </p>
+              </div>
+              <div>
+                <span className="text-slate-400">Upload Timestamp:</span>
+                <p className="font-semibold text-slate-700">
+                  {new Date(selectedDoc.createdAt || Date.now()).toLocaleString()}
+                </p>
+              </div>
+              <div>
+                <span className="text-slate-400">File Size:</span>
+                <p className="font-semibold text-slate-700">
+                  {selectedDoc.fileSize ? `${(selectedDoc.fileSize / 1024).toFixed(1)} KB` : 'N/A'}
+                </p>
+              </div>
+              <div className="col-span-2">
+                <span className="text-slate-400">File Path:</span>
+                <p className="font-semibold text-slate-700 truncate" title={selectedDoc.filePath}>{selectedDoc.filePath || 'Stored on disk'}</p>
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="font-semibold text-slate-700">
+                  Extracted Content / Vector Preview
+                </label>
+                <span className="text-[10px] text-slate-400 font-mono">
+                  {selectedDoc.extractedText ? `${selectedDoc.extractedText.length} characters` : 'No text preview'}
+                </span>
+              </div>
+              <div className="p-3 bg-slate-900 text-slate-200 rounded-lg max-h-60 overflow-y-auto font-mono text-[11px] whitespace-pre-wrap">
+                {selectedDoc.extractedText || 'No text extracted. Document may be binary or pending OCR.'}
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-slate-100 flex justify-end gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setSelectedDoc(null)}
+              >
+                Close
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
       {/* Upload Modal */}
       <Modal
         isOpen={isUploadModalOpen}
         onClose={() => setIsUploadModalOpen(false)}
-        title="Ingest Confidential Document"
-        subtitle="Ingests file into local encrypted volume for on-prem RAG vectorization"
+        title="Ingest & Vectorize Document"
+        subtitle="Uploads file, runs chunking, embeds text, and indexes into Qdrant for AI Agents"
         icon={Upload}
       >
         <form onSubmit={handleUploadSubmit} className="space-y-4 text-xs">
@@ -335,7 +480,7 @@ const DocumentsPage = () => {
                 {selectedFile ? selectedFile.name : 'Click to select technical file'}
               </div>
               <p className="text-[11px] text-slate-400 mt-1">
-                Supports PDF, DOCX, XLSX, DWG, PNG (Max 150MB per file)
+                Supports PDF, DOCX, XLSX, TXT, CSV, MD, PNG, JPG (Max 150MB per file)
               </p>
             </label>
           </div>
@@ -349,7 +494,7 @@ const DocumentsPage = () => {
               Cancel
             </Button>
             <Button type="submit" size="sm" isLoading={submitting}>
-              Ingest & Vectorize
+              {submitting ? 'Chunking & Vectorizing...' : 'Ingest & Vectorize'}
             </Button>
           </div>
         </form>

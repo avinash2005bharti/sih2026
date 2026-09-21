@@ -6,6 +6,7 @@ Provides exact text extraction from equipment nameplates, gauges, and industrial
 import os
 import time
 import gc
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Union
 import numpy as np
 from PIL import Image
@@ -109,14 +110,22 @@ class OCRService:
 
     def extract_text(self, image_source: Union[str, bytes, Image.Image]) -> Dict[str, Any]:
         """
-        Extract exact text from an image.
+        Extract exact text from an image or PDF document.
 
         Args:
-            image_source: Base64 data string, local file path, raw bytes, or PIL Image.
+            image_source: Base64 data string, local file path (image or PDF), raw bytes, or PIL Image.
 
         Returns:
             Structured dictionary with detected text, blocks, confidence, and status.
         """
+        # Check if source is a PDF file or bytes
+        if isinstance(image_source, str) and (image_source.strip().lower().endswith(".pdf") or "application/pdf" in image_source):
+            return self.extract_pdf(image_source)
+        if isinstance(image_source, bytes) and image_source.startswith(b"%PDF"):
+            return self.extract_pdf(image_source)
+        if hasattr(image_source, "suffix") and getattr(image_source, "suffix", "").lower() == ".pdf":
+            return self.extract_pdf(str(image_source))
+
         start_time = time.time()
         logger.info("[OCR] Starting OCR")
 
@@ -213,6 +222,8 @@ class OCRService:
                 "text": full_text,
                 "confidence": avg_confidence,
                 "blocks": sorted_blocks,
+                "lines": sorted_blocks,
+                "line_count": len(sorted_blocks),
                 "duration_seconds": duration,
                 "engine": self._engine_name
             }
@@ -237,6 +248,88 @@ class OCRService:
     def extract_text_from_bytes(self, image_bytes: bytes) -> Dict[str, Any]:
         """Convenience method to extract text from raw bytes."""
         return self.extract_text(image_bytes)
+
+    def extract_pdf(self, pdf_source: Union[str, bytes], max_pages: int = 30) -> Dict[str, Any]:
+        """Extract text from multi-page scanned PDF using pypdfium2 page rendering + PaddleOCR."""
+        start_time = time.time()
+        logger.info(f"[OCR] Starting PDF OCR extraction: {pdf_source if isinstance(pdf_source, str) else 'raw bytes'}")
+        if not self.is_available:
+            return {
+                "success": False,
+                "text": "",
+                "confidence": 0.0,
+                "blocks": [],
+                "error": self._initialization_error or "OCR engine is not available",
+                "engine": self._engine_name
+            }
+
+        try:
+            import pypdfium2 as pdfium
+            if isinstance(pdf_source, bytes):
+                doc = pdfium.PdfDocument(pdf_source)
+            else:
+                p = Path(str(pdf_source).strip())
+                if not p.exists():
+                    # Check candidate search paths
+                    from rag.document_store import CANDIDATE_SEARCH_DIRS, BASE_DIR
+                    found_p = None
+                    for c_dir in CANDIDATE_SEARCH_DIRS + [BASE_DIR, BASE_DIR / "workspace", BASE_DIR / "workspace" / "reports", BASE_DIR.parent]:
+                        cand = (c_dir / p.name).resolve()
+                        if cand.exists() and cand.is_file():
+                            found_p = cand
+                            break
+                    if found_p:
+                        p = found_p
+                    else:
+                        return {"success": False, "text": "", "error": f"PDF file not found: {pdf_source}"}
+                doc = pdfium.PdfDocument(str(p.resolve()))
+
+            all_page_texts = []
+            all_blocks = []
+            confidences = []
+            total_pages = len(doc)
+            pages_to_process = min(total_pages, max_pages)
+
+            for idx in range(pages_to_process):
+                page = doc[idx]
+                pil_img = page.render(scale=2.0).to_pil()
+                page_res = self.extract_text(pil_img)
+                if page_res.get("text"):
+                    all_page_texts.append(f"--- Page {idx + 1} ---\n{page_res['text']}")
+                for b in page_res.get("blocks", []):
+                    b_copy = dict(b)
+                    b_copy["page"] = idx + 1
+                    all_blocks.append(b_copy)
+                if page_res.get("confidence"):
+                    confidences.append(page_res["confidence"])
+
+            combined_text = "\n\n".join(all_page_texts).strip()
+            avg_conf = round(sum(confidences) / len(confidences), 3) if confidences else 0.0
+            duration = round(time.time() - start_time, 2)
+            logger.info(f"[OCR] PDF extraction completed: {pages_to_process}/{total_pages} pages in {duration}s | text_len={len(combined_text)}")
+
+            return {
+                "success": True,
+                "text": combined_text,
+                "confidence": avg_conf,
+                "blocks": all_blocks,
+                "lines": all_blocks,
+                "line_count": len(all_blocks),
+                "page_count": total_pages,
+                "pages_processed": pages_to_process,
+                "duration_seconds": duration,
+                "engine": self._engine_name
+            }
+        except Exception as e:
+            logger.error(f"[OCR] PDF extraction error: {e}", exc_info=True)
+            return {
+                "success": False,
+                "text": "",
+                "confidence": 0.0,
+                "blocks": [],
+                "error": str(e),
+                "engine": self._engine_name
+            }
 
 
 # Global singleton OCR service instance

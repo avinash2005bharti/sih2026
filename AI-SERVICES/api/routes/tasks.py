@@ -96,3 +96,51 @@ async def list_tasks(limit: int = 20):
     """List recent executed tasks with status summaries."""
     recent = list(_TASK_STORE.values())[-limit:]
     return {"tasks": recent, "count": len(recent)}
+
+
+class InspectionApprovalRequest(BaseModel):
+    report_text: Optional[str] = Field(None, description="Optional scanned report text or file path")
+    equipment_tag: Optional[str] = Field("TG-04", description="Equipment tag identifier")
+    output_filename: Optional[str] = Field("TG04_Inspection_Approval_Note.docx", description="Output Word filename")
+
+
+@router.post("/tasks/inspection-approval", summary="Execute end-to-end scanned inspection to Word approval note task")
+async def execute_inspection_approval_task(request: Optional[InspectionApprovalRequest] = None):
+    """
+    Carries out an end-to-end agentic task:
+    1. Reads and parses scanned field inspection report and telemetry deviations.
+    2. Synthesizes ISO engineering clearance criteria.
+    3. Drafts and saves a formal Approval Note as a formatted Microsoft Word (.docx) file.
+    """
+    req = request or InspectionApprovalRequest()
+    objective = (
+        f"Read scanned inspection report for {req.equipment_tag}, extract key technical findings, "
+        f"and draft a formal engineering approval note as a Word file named {req.output_filename}."
+    )
+
+    try:
+        state: AgenticState = await orchestrator.run(query=objective)
+        formatted_plan = [p.dict() for p in state.plan]
+        formatted_obs = [o.dict() for o in state.observations]
+
+        # Locate docx deliverable
+        doc_path = f"reports/{req.output_filename}"
+        download_url = f"/workspace/{doc_path}"
+
+        response_data = {
+            "task_id": state.task_id,
+            "status": state.status,
+            "equipment_tag": req.equipment_tag,
+            "file_path": doc_path,
+            "download_url": download_url,
+            "deliverable_type": "Microsoft Word (.docx)",
+            "plan": formatted_plan,
+            "observations": formatted_obs,
+            "final_response": state.final_response
+        }
+        _TASK_STORE[state.task_id] = response_data
+        return response_data
+    except Exception as e:
+        logger.error(f"Inspection approval task failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Inspection task error: {str(e)}")
+

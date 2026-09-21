@@ -1,3 +1,5 @@
+const fs = require("fs");
+const path = require("path");
 const { Server } = require("socket.io");
 const { sendChatToAI, checkAIServiceHealth, sendChatToAIStream } = require("../services/python.service");
 const userModel = require("../models/user.model");
@@ -55,6 +57,11 @@ module.exports = function initializeSocketServer(httpServer) {
       if (!decoded || !decoded.id) {
         return next(new Error("Invalid token payload"));
       }
+
+      const mongoose = require("mongoose");
+      if (mongoose.connection.readyState !== 1) {
+        return next(new Error("Database unavailable"));
+      }
       
       socket.userId = decoded.id;
       socket.user = await userModel.findById(decoded.id);
@@ -84,35 +91,97 @@ module.exports = function initializeSocketServer(httpServer) {
      * Frontend sends: { conversationId?, message, model?, agent? }
      */
     socket.on("chat:send", async (data) => {
-      const { conversationId, message, model = "auto", agent = "auto", requestId, images, attachment } = data;
+      const {
+        conversationId,
+        message,
+        model = "auto",
+        agent = "auto",
+        requestId,
+        images,
+        attachment,
+        file_ids,
+        fileIds,
+        files
+      } = data;
       const messageId = requestId || `msg_${Date.now()}`;
       let chatId = conversationId;
 
-      // Extract any base64 image data from attachment or images array
+      // Extract images vs document files
       let effectiveImages = [];
+      let effectiveFileIds = [];
+
+      if (Array.isArray(file_ids)) effectiveFileIds.push(...file_ids);
+      if (Array.isArray(fileIds)) effectiveFileIds.push(...fileIds);
+      if (Array.isArray(files)) {
+        for (const f of files) {
+          if (typeof f === "string") effectiveFileIds.push(f);
+          else if (f?.path) effectiveFileIds.push(f.path);
+          else if (f?.file_id || f?._id) effectiveFileIds.push(f.file_id || f._id);
+        }
+      }
+
+      const isImagePayload = (mime, filename, dataUrl) => {
+        if (mime && typeof mime === "string" && mime.toLowerCase().startsWith("image/")) return true;
+        if (filename && typeof filename === "string") {
+          const ext = path.extname(filename).toLowerCase();
+          if ([".jpg", ".jpeg", ".png", ".webp", ".bmp", ".jfif", ".tiff", ".gif"].includes(ext)) return true;
+        }
+        if (dataUrl && typeof dataUrl === "string" && dataUrl.startsWith("data:image/")) return true;
+        return false;
+      };
+
       if (Array.isArray(images) && images.length > 0) {
         effectiveImages = images;
-      } else if (attachment && typeof attachment === "object") {
-        if (attachment.base64) effectiveImages.push(attachment.base64);
-        else if (attachment.data) effectiveImages.push(attachment.data);
+      }
+
+      if (attachment && typeof attachment === "object") {
+        const rawData = attachment.data || attachment.base64;
+        const mime = attachment.type || "";
+        const name = attachment.name || `attachment_${Date.now()}`;
+
+        if (isImagePayload(mime, name, rawData)) {
+          if (rawData) effectiveImages.push(rawData);
+        } else if (rawData) {
+          try {
+            const uploadDir = path.resolve(__dirname, "../../uploads/documents");
+            if (!fs.existsSync(uploadDir)) {
+              fs.mkdirSync(uploadDir, { recursive: true });
+            }
+            const cleanName = name.replace(/[^a-zA-Z0-9._-]/g, "_");
+            const targetFilename = `${Date.now()}-${cleanName}`;
+            const targetPath = path.join(uploadDir, targetFilename);
+            const base64Content = rawData.includes(";base64,") ? rawData.split(";base64,")[1] : rawData;
+            fs.writeFileSync(targetPath, Buffer.from(base64Content, "base64"));
+            effectiveFileIds.push(targetPath);
+            console.log(`📎 Saved document attachment to ${targetPath} (${base64Content.length} chars)`);
+          } catch (attErr) {
+            console.error("Failed to save attachment file:", attErr);
+          }
+        } else if (attachment.path) {
+          effectiveFileIds.push(attachment.path);
+        } else if (attachment.file_id || attachment._id) {
+          effectiveFileIds.push(attachment.file_id || attachment._id);
+        }
       } else if (data.image) {
         effectiveImages.push(data.image);
       }
 
-      console.log(`📨 chat:send from ${socket.user.email}: "${(message || '').substring(0, 50)}..." (images: ${effectiveImages.length})`);
+      console.log(`📨 chat:send from ${socket.user.email}: "${(message || '').substring(0, 50)}..." (images: ${effectiveImages.length}, files: ${effectiveFileIds.length})`);
 
       try {
-        // Validate message or image
-        if ((!message || message.trim().length === 0) && effectiveImages.length === 0) {
+        // Validate message, image, or document attachment
+        if ((!message || message.trim().length === 0) && effectiveImages.length === 0 && effectiveFileIds.length === 0) {
           socket.emit("chat:error", {
             messageId,
-            error: "Message or image attachment cannot be empty",
+            error: "Message, image, or document attachment cannot be empty",
             code: "INVALID_MESSAGE",
           });
           return;
         }
 
-        const effectivePrompt = message && message.trim().length > 0 ? message.trim() : "Analyze this image";
+        const effectivePrompt = message && message.trim().length > 0 
+          ? message.trim() 
+          : (effectiveImages.length > 0 ? "Analyze this image" : "Analyze and summarize this document");
 
         // Resolve agent slug to DB Agent
         const Agent = require("../models/agent.model");
@@ -183,10 +252,15 @@ module.exports = function initializeSocketServer(httpServer) {
           model: effectiveModel,
           agent: agentDoc ? agentDoc.slug : agent,
           images: effectiveImages,
+          fileIds: effectiveFileIds,
           systemPrompt: agentSystemPrompt,
           temperature: agentTemperature,
           maxTokens: agentMaxTokens,
           userId: socket.userId,
+          isAdmin: Boolean(socket.user?.isAdmin || socket.user?.role === "admin"),
+          userRole: socket.user?.role || (socket.user?.isAdmin ? "admin" : "operator"),
+          userName: socket.user?.fullName ? `${socket.user.fullName.firstName || ""} ${socket.user.fullName.lastName || ""}`.trim() : socket.user?.email || "User",
+          userEmail: socket.user?.email || "",
           onChunk: async (chunk, isComplete, fullResponse, generatedFiles = [], toolExecutions = [], multimodalData = null) => {
             // Skip empty chunks
             if (!isComplete && (chunk == null || (typeof chunk === 'string' && !chunk))) {

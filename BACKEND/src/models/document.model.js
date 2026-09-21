@@ -71,6 +71,23 @@ const documentSchema = new mongoose.Schema(
 
     metadata: {
       type: mongoose.Schema.Types.Mixed
+    },
+
+    isUploadedByAdmin: {
+      type: Boolean,
+      default: false
+    },
+
+    uploaderRole: {
+      type: String,
+      default: "operator"
+    },
+
+    uploaderInfo: {
+      name: { type: String },
+      email: { type: String },
+      role: { type: String },
+      department: { type: String }
     }
   },
   {

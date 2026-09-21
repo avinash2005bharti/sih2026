@@ -21,9 +21,14 @@ async function sendChatToAI({
     message,
     conversationId,
     userId,
+    isAdmin = false,
+    userRole = "operator",
+    userName = "User",
+    userEmail = "",
     requestId,
     model,
     images = [],
+    fileIds = [],
     context = {},
 }) {
     try {
@@ -33,11 +38,23 @@ async function sendChatToAI({
             conversation_id: conversationId,
             userId,
             user_id: userId,
+            isAdmin,
+            is_admin: isAdmin,
+            userRole,
+            user_role: userRole,
+            userName,
+            user_name: userName,
+            userEmail,
+            user_email: userEmail,
             request_id: requestId,
             model,
             context,
         };
         if (images && images.length > 0) payload.images = images;
+        if (fileIds && fileIds.length > 0) {
+            payload.file_ids = fileIds;
+            payload.fileIds = fileIds;
+        }
 
         const response = await axios.post(
             `${PYTHON_AI_SERVICE_URL}/api/chat`,
@@ -82,10 +99,15 @@ async function sendChatToAIStream({
     model = "auto",
     agent = "general",
     images = [],
+    fileIds = [],
     systemPrompt,
     temperature,
     maxTokens,
     userId,
+    isAdmin = false,
+    userRole = "operator",
+    userName = "User",
+    userEmail = "",
     abortSignal,
     onChunk = () => {},
     onError = () => {},
@@ -98,6 +120,14 @@ async function sendChatToAIStream({
             conversation_id: conversationId,
             userId,
             user_id: userId,
+            isAdmin,
+            is_admin: isAdmin,
+            userRole,
+            user_role: userRole,
+            userName,
+            user_name: userName,
+            userEmail,
+            user_email: userEmail,
             requestId,
             request_id: requestId,
             agent,
@@ -108,6 +138,10 @@ async function sendChatToAIStream({
             max_tokens: maxTokens,
         };
         if (images && images.length > 0) streamPayload.images = images;
+        if (fileIds && fileIds.length > 0) {
+            streamPayload.file_ids = fileIds;
+            streamPayload.fileIds = fileIds;
+        }
 
         const response = await axios.post(
             `${PYTHON_AI_SERVICE_URL}/api/chat/stream`,
@@ -395,15 +429,16 @@ async function processDocument({
     filePath,
     documentId,
     userId,
+    name,
 }) {
     try {
-
         const response = await axios.post(
             `${PYTHON_AI_SERVICE_URL}/api/documents/process`,
             {
                 filePath,
                 documentId,
                 userId,
+                name,
             },
             {
                 timeout: 300000, // 5 minutes
@@ -416,7 +451,6 @@ async function processDocument({
         return response.data;
 
     } catch (error) {
-
         console.error(
             "❌ Document Processing Error:",
             error.response?.data || error.message
@@ -424,8 +458,31 @@ async function processDocument({
 
         throw new Error(
             error.response?.data?.message ||
+            error.response?.data?.detail ||
             "Document processing failed"
         );
+    }
+}
+
+
+/**
+ * Delete document vectors from Python AI Service (Qdrant)
+ */
+async function deleteDocumentFromAI(documentId) {
+    try {
+        const response = await axios.delete(
+            `${PYTHON_AI_SERVICE_URL}/api/documents/${documentId}`,
+            {
+                timeout: 30000,
+            }
+        );
+        return response.data;
+    } catch (error) {
+        console.warn(
+            "⚠️ AI Service Document Deletion Warning:",
+            error.response?.data || error.message
+        );
+        return { success: false, error: error.message };
     }
 }
 
@@ -509,6 +566,7 @@ module.exports = {
     checkAIServiceHealth,
     getAIModels,
     processDocument,
+    deleteDocumentFromAI,
     getOllamaModels,
     pullAIModel,
     analyzeImage

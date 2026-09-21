@@ -15,7 +15,7 @@ Start-Sleep -Seconds 3
 
 # 3. AI Service
 Write-Host "[3/5] Starting FastAPI AI Service on port 8000..." -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "`$host.UI.RawUI.WindowTitle = 'Sovereign - AI Service (8000)'; Set-Location '$PSScriptRoot\AI-SERVICES'; py -3 -m uvicorn main:app --port 8000"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "`$host.UI.RawUI.WindowTitle = 'Sovereign - AI Service (8000)'; Set-Location '$PSScriptRoot\AI-SERVICES'; if (Test-Path .\.venv\Scripts\python.exe) { .\.venv\Scripts\python.exe -m uvicorn main:app --port 8000 } else { py -3 -m uvicorn main:app --port 8000 }"
 
 Start-Sleep -Seconds 3
 

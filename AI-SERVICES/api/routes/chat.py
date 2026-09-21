@@ -43,6 +43,10 @@ class ChatRequest(BaseModel):
     agent: Optional[str] = Field(default="auto", description="Agent slug or 'auto' for central routing")
     conversation_id: Optional[str] = Field(None, description="Conversation ID for context retention")
     user_id: Optional[str] = Field(None, description="User ID for RBAC and episodic memory recall")
+    is_admin: bool = Field(default=False, description="Whether requesting user has admin privileges")
+    user_role: Optional[str] = Field(default=None, description="User role (admin, engineer, operator, client)")
+    user_name: Optional[str] = Field(default=None, description="User full name")
+    user_email: Optional[str] = Field(default=None, description="User email")
     request_id: Optional[str] = Field(None, description="End-to-end correlation ID")
     task_type: Optional[str] = Field(default="auto", description="Task type classification hint")
     system_prompt: Optional[str] = Field(None, description="Custom system instructions")
@@ -59,6 +63,14 @@ class ChatRequest(BaseModel):
                 values["conversation_id"] = values["conversationId"]
             if "userId" in values and not values.get("user_id"):
                 values["user_id"] = values["userId"]
+            if "isAdmin" in values and "is_admin" not in values:
+                values["is_admin"] = values["isAdmin"]
+            if "userRole" in values and "user_role" not in values:
+                values["user_role"] = values["userRole"]
+            if "userName" in values and "user_name" not in values:
+                values["user_name"] = values["userName"]
+            if "userEmail" in values and "user_email" not in values:
+                values["user_email"] = values["userEmail"]
             if "requestId" in values and not values.get("request_id"):
                 values["request_id"] = values["requestId"]
             if "systemPrompt" in values and not values.get("system_prompt"):
@@ -194,13 +206,23 @@ async def upload_chat_files(files: List[UploadFile] = File(...)):
 def resolve_uploaded_file(file_id: str) -> Path:
     if not file_id:
         raise HTTPException(status_code=400, detail="Invalid file ID.")
+    from tools.agent_tools import resolve_any_file_path
+    resolved = resolve_any_file_path(file_id, must_exist=False)
+    if resolved.exists() and resolved.is_file():
+        return resolved
+
     safe_name = Path(file_id).name
-    if safe_name != file_id:
-        raise HTTPException(status_code=400, detail="Invalid file ID.")
-    path = UPLOAD_DIR / safe_name
-    if not path.exists():
-        raise HTTPException(status_code=404, detail=f"Uploaded file '{file_id}' was not found.")
-    return path
+    candidates = [
+        UPLOAD_DIR / safe_name,
+        Path(_ai_root).parent / "BACKEND" / "uploads" / "documents" / safe_name,
+        Path(_ai_root).parent / "BACKEND" / "uploads" / safe_name,
+        Path(_ai_root) / "workspace" / "reports" / safe_name,
+        Path(_ai_root).parent / safe_name
+    ]
+    for c in candidates:
+        if c.exists() and c.is_file():
+            return c
+    raise HTTPException(status_code=404, detail=f"Uploaded file '{file_id}' was not found.")
 
 async def extract_file_content(path: Path) -> Dict[str, Any]:
     extension = path.suffix.lower()
@@ -214,84 +236,11 @@ async def extract_file_content(path: Path) -> Dict[str, Any]:
     }
     
     try:
-        if extension in TEXT_EXTENSIONS or extension == ".csv":
-            text = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="ignore")
-            result["text"] = text[:100_000]
-            return result
-            
-        if extension == ".pdf":
-            try:
-                from pypdf import PdfReader
-                def read_pdf():
-                    reader = PdfReader(str(path))
-                    return "\n".join([page.extract_text() or "" for page in reader.pages])
-                text = await asyncio.to_thread(read_pdf)
-                result["text"] = text[:100_000]
-            except ImportError:
-                result["success"] = False
-                result["error"] = "pypdf is not installed."
-            return result
-            
-        if extension == ".docx":
-            try:
-                from docx import Document
-                def read_docx():
-                    doc = Document(str(path))
-                    return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
-                text = await asyncio.to_thread(read_docx)
-                result["text"] = text[:100_000]
-            except ImportError:
-                result["success"] = False
-                result["error"] = "python-docx is not installed."
-            return result
-            
-        if extension in {".xlsx", ".xls"}:
-            try:
-                import openpyxl
-                def read_excel():
-                    if extension == ".xlsx":
-                        wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
-                        sheets = []
-                        for sheet in wb.worksheets:
-                            sheets.append(f"\n[SHEET: {sheet.title}]")
-                            for row in sheet.iter_rows(values_only=True):
-                                vals = [str(v) if v is not None else "" for v in row]
-                                if any(vals): sheets.append(" | ".join(vals))
-                        return "\n".join(sheets)
-                    return "Legacy .xls files require an XLS-compatible reader."
-                text = await asyncio.to_thread(read_excel)
-                result["text"] = text[:100_000]
-            except ImportError:
-                result["success"] = False
-                result["error"] = "openpyxl is not installed."
-            return result
-            
-        if extension == ".pptx":
-            try:
-                from pptx import Presentation
-                def read_pptx():
-                    prs = Presentation(str(path))
-                    slides = []
-                    for i, slide in enumerate(prs.slides, 1):
-                        slides.append(f"\n[SLIDE {i}]")
-                        for shape in slide.shapes:
-                            if hasattr(shape, "text") and shape.text.strip():
-                                slides.append(shape.text.strip())
-                    return "\n".join(slides)
-                text = await asyncio.to_thread(read_pptx)
-                result["text"] = text[:100_000]
-            except ImportError:
-                result["success"] = False
-                result["error"] = "python-pptx is not installed."
-            return result
-            
-        if extension in IMAGE_EXTENSIONS:
-            result["metadata"] = {"requires_vision": True, "message": "Image should be processed through multimodal pipeline."}
-            return result
-            
-        result["metadata"] = {"message": "File uploaded successfully but no text extractor is configured."}
+        from rag.parser import document_parser
+        parsed = await asyncio.to_thread(document_parser.parse_file, str(path))
+        result["text"] = (parsed.text or "")[:100_000]
+        result["metadata"] = parsed.metadata
         return result
-        
     except Exception as exc:
         logger.warning(f"[FILE] Extraction failed for {path.name}: {exc}")
         result["success"] = False
@@ -410,6 +359,16 @@ async def chat(request: ChatRequest):
             eff_system_prompt = request.system_prompt or "You are an industrial engineering and risk assessment expert."
             if memory_ctx:
                 eff_system_prompt = f"{eff_system_prompt}\n\n{memory_ctx}".strip()
+
+            try:
+                from rag.document_store import document_store
+                docs = document_store.list_documents(limit=15, user_id=request.user_id, is_admin=True)
+                if docs:
+                    doc_names = [f"- {d.get('name') or d.get('originalName')} (ID: {d.get('document_id') or d.get('_id')}, Type: {d.get('documentType', 'unknown')})" for d in docs]
+                    eff_system_prompt = f"{eff_system_prompt}\n\n### Workspace Document Section Documents:\n" + "\n".join(doc_names)
+            except Exception as doc_err:
+                logger.debug(f"Document store context retrieval notice in multimodal: {doc_err}")
+
         attached_files = await process_attached_files(request.file_ids)
         file_context = build_file_context(attached_files)
         if file_context:
@@ -478,6 +437,8 @@ async def chat(request: ChatRequest):
         enriched = await central_context_builder.build(
             conversation_id=request.conversation_id or "default",
             user_id=request.user_id,
+            is_admin=request.is_admin,
+            user_role=request.user_role,
             query=query,
             agent_id=selected_agent,
             system_prompt=request.system_prompt or system_prompt_for(selected_agent)
@@ -502,7 +463,13 @@ async def chat(request: ChatRequest):
             result = await agent.execute(
                 query=query,
                 history_messages=enriched.history_messages,
-                conversation_id=request.conversation_id
+                conversation_id=request.conversation_id,
+                request_id=request_id,
+                user_id=request.user_id,
+                is_admin=request.is_admin,
+                user_role=request.user_role,
+                user_name=request.user_name,
+                user_email=request.user_email
             )
 
             task_id = f"task_{uuid.uuid4().hex[:8]}"
@@ -674,6 +641,11 @@ async def chat_stream(request: ChatRequest):
             if memory_ctx:
                 eff_system_prompt = f"{eff_system_prompt}\n\n{memory_ctx}".strip()
 
+            attached_files = await process_attached_files(request.file_ids)
+            file_context = build_file_context(attached_files)
+            if file_context:
+                eff_system_prompt = f"{eff_system_prompt}\n\n===== ATTACHED FILE CONTEXT =====\n{file_context}"
+
             async def generate_multimodal():
                 try:
                     # 1. Start notification
@@ -784,10 +756,16 @@ async def chat_stream(request: ChatRequest):
         enriched = await central_context_builder.build(
             conversation_id=request.conversation_id or "default",
             user_id=request.user_id,
+            is_admin=request.is_admin,
+            user_role=request.user_role,
             query=query,
             agent_id=selected_agent,
             system_prompt=request.system_prompt or system_prompt_for(selected_agent)
         )
+        attached_files = await process_attached_files(request.file_ids)
+        file_context = build_file_context(attached_files)
+        if file_context:
+            enriched.system_prompt = enriched.system_prompt + "\n\n===== ATTACHED FILES =====\n" + file_context
 
         is_agent_mode = bool(selected_agent and selected_agent.lower() not in ["none", "direct"])
 
@@ -816,7 +794,13 @@ async def chat_stream(request: ChatRequest):
                     async for event in agent.stream(
                         query=query,
                         history_messages=enriched.history_messages,
-                        conversation_id=request.conversation_id
+                        conversation_id=request.conversation_id,
+                        request_id=request_id,
+                        user_id=request.user_id,
+                        is_admin=request.is_admin,
+                        user_role=request.user_role,
+                        user_name=request.user_name,
+                        user_email=request.user_email
                     ):
                         if event.get("token"):
                             streamed_tokens.append(event["token"])

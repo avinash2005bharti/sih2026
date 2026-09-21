@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     OLLAMA_CODE_MODEL: str = "qwen2.5-coder:1.5b"
     OLLAMA_VISION_MODEL: str = "moondream:latest"
     OLLAMA_EMBED_MODEL: str = "nomic-embed-text:latest"
+    OLLAMA_KEEP_ALIVE: str = "0"  # Low RAM CPU-only setting: unloads models between sequential steps
+    RAG_TOP_K: int = 5
 
     # Multimodal: Vision & OCR
     VISION_MODEL: str = "moondream:latest"

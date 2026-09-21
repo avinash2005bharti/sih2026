@@ -16,6 +16,7 @@ const toolRoutes = require("./routes/tool.routes");
 const settingRoutes = require("./routes/setting.routes");
 const adminRoutes = require("./routes/admin.routes");
 const memoryRoutes = require("./routes/memory.routes");
+const networkRoutes = require("./routes/network.routes");
 
 // Create Express app
 const app = express();
@@ -89,6 +90,9 @@ app.use('/api/admin', adminRoutes);
 
 // Memory Architecture Routes
 app.use('/api/memory', memoryRoutes);
+
+// Sovereign Network & Air-Gap Routes
+app.use('/api/network', networkRoutes);
 
 // ===============================
 // Health Check

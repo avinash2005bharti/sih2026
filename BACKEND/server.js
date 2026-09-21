@@ -47,16 +47,6 @@ async function performStartupDiagnostics() {
     }
 }
 
-connectDB()
-    .then(async () => {
-        await seedDefaultAgents();
-    })
-    .catch((err) => {
-        console.warn(`⚠️ MongoDB connection issue (continuing): ${err.message}`);
-    });
-
-socket(httpserver);  // ✅ Socket.IO enabled
-
 httpserver.on('error', (error) => {
     if (error.code === 'EADDRINUSE') {
         console.error(`\n❌ Error: Port ${PORT} is already in use.`);
@@ -68,7 +58,41 @@ httpserver.on('error', (error) => {
     }
 });
 
-httpserver.listen(PORT, async () => {
-    console.log(`Server is running on port ${PORT}`);
-    await performStartupDiagnostics();
-});
+async function startServer() {
+    // 1. Connect to MongoDB with retry support
+    const dbConnected = await connectDB(5, 2000);
+    if (dbConnected) {
+        try {
+            await seedDefaultAgents();
+        } catch (seedErr) {
+            console.warn(`⚠️ Error seeding default agents: ${seedErr.message}`);
+        }
+    } else {
+        console.warn(`⚠️ Starting server in degraded mode without database connection.`);
+        // Background reconnection attempt
+        const reconnectInterval = setInterval(async () => {
+            console.log(`🔄 Attempting background reconnect to MongoDB...`);
+            const ok = await connectDB(1, 1000);
+            if (ok) {
+                clearInterval(reconnectInterval);
+                try {
+                    await seedDefaultAgents();
+                } catch (e) {
+                    console.warn(`⚠️ Error seeding agents after reconnect: ${e.message}`);
+                }
+            }
+        }, 10000);
+        reconnectInterval.unref();
+    }
+
+    // 2. Initialize Socket.IO
+    socket(httpserver);
+
+    // 3. Start listening
+    httpserver.listen(PORT, async () => {
+        console.log(`Server is running on port ${PORT}`);
+        await performStartupDiagnostics();
+    });
+}
+
+startServer();

@@ -13,9 +13,20 @@ export const documentApi = {
     return res.data;
   },
 
-  // Record an uploaded document
+  // Record or upload a document file
   uploadDocument: async (documentData) => {
-    const res = await client.post('/documents', documentData);
+    const isFormData = typeof FormData !== 'undefined' && documentData instanceof FormData;
+    const config = {
+      timeout: 300000, // 5 minutes for document parsing, chunking, and vector ingestion
+      ...(isFormData ? { headers: { 'Content-Type': 'multipart/form-data' } } : {})
+    };
+    const res = await client.post('/documents', documentData, config);
+    return res.data;
+  },
+
+  // Update document
+  updateDocument: async (documentId, documentData) => {
+    const res = await client.put(`/documents/${documentId}`, documentData);
     return res.data;
   },
 

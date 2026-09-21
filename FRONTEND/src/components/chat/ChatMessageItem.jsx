@@ -738,7 +738,17 @@ const ChatMessageItem = ({ message }) => {
               </div>
               <div className="flex flex-wrap gap-2">
                 {generatedFiles.map((file, fIdx) => {
-                  const fileUrl = `http://localhost:8000/workspace/${file.path}`;
+                  let rawP = (file.path || '').replace(/\\/g, '/');
+                  let cleanP = rawP;
+                  if (cleanP.includes('/workspace/')) {
+                    cleanP = cleanP.split('/workspace/').pop();
+                  } else if (cleanP.startsWith('workspace/')) {
+                    cleanP = cleanP.replace(/^workspace\//, '');
+                  } else if (/^[a-zA-Z]:\//.test(cleanP)) {
+                    cleanP = cleanP.includes('/reports/') ? 'reports/' + cleanP.split('/reports/').pop() : (file.name || cleanP.split('/').pop());
+                  }
+                  cleanP = cleanP.replace(/^\/+/, '');
+                  const fileUrl = file.url || `http://localhost:8000/workspace/${encodeURI(cleanP || file.name)}`;
                   return (
                     <a
                       key={fIdx}

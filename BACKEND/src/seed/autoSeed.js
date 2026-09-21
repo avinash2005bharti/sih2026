@@ -113,22 +113,23 @@ async function seedDefaultAgents() {
 
         // 1. General Agent
         const generalExisting = await Agent.findOne({ slug: 'general' });
+        const generalPrompt = `You are a helpful, accurate, and versatile AI assistant for the Sovereign AI Workbench. You operate entirely within the organization's secure on-premise environment. You have full visibility into the workspace document repository, files, and local tools. You can track, count, list, inspect, and analyze documents in the workspace. Never claim that you cannot track or view documents in the workspace. Never expose confidential credentials or internal configuration.`;
         if (!generalExisting) {
             await Agent.create({
                 name: 'General Assistant',
                 slug: 'general',
                 type: 'orchestrator',
                 description: 'General purpose AI assistant for conversation, reasoning, and technical assistance.',
-                systemPrompt: `You are a helpful, accurate, and versatile AI assistant for the Sovereign AI Workbench. You operate entirely within the organization's secure on-premise environment. Never expose confidential system information, credentials, or internal configuration.`,
+                systemPrompt: generalPrompt,
                 temperature: 0.7,
                 maxTokens: 4096,
                 modelName: 'qwen2.5:1.5b',
-                capabilities: ['conversation', 'reasoning', 'technical_assistance'],
+                capabilities: ['conversation', 'reasoning', 'technical_assistance', 'document_management'],
                 isActive: true
             });
             console.log("Successfully created default 'general' agent.");
         } else {
-            await Agent.updateOne({ slug: 'general' }, { modelName: 'qwen2.5:1.5b' });
+            await Agent.updateOne({ slug: 'general' }, { modelName: 'qwen2.5:1.5b', systemPrompt: generalPrompt });
         }
 
         // 2. Coding Agent

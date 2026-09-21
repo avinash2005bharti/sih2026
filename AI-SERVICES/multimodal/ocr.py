@@ -5,6 +5,7 @@ Extracts structured text from nameplates, labels, schematics, and serial stamps.
 
 from typing import Any, Dict, List, Optional
 from ocr.ocr_service import ocr_service
+from multimodal.vision import vision_service
 from core.config import settings
 from core.logging import logger
 

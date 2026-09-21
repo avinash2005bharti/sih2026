@@ -118,7 +118,7 @@ async function sendMessage(req, res) {
     try {
         const userId = req.user._id;
         const { chatId } = req.params;
-        const { content } = req.body;
+        const { content, model, images, fileIds } = req.body;
 
         // Validate message
         if (!content || !content.trim()) {
@@ -161,7 +161,13 @@ async function sendMessage(req, res) {
                 message: content.trim(),
                 conversationId: chatId,
                 userId: userId.toString(),
-                model: "auto",
+                isAdmin: Boolean(req.user?.isAdmin || req.user?.role === "admin"),
+                userRole: req.user?.role || (req.user?.isAdmin ? "admin" : "operator"),
+                userName: req.user?.fullName ? `${req.user.fullName.firstName || ""} ${req.user.fullName.lastName || ""}`.trim() : req.user?.email || "User",
+                userEmail: req.user?.email || "",
+                model: model || "auto",
+                images: Array.isArray(images) ? images : [],
+                fileIds: Array.isArray(fileIds) ? fileIds : [],
             });
             if (aiResult && aiResult.response) {
                 aiContent = aiResult.response;

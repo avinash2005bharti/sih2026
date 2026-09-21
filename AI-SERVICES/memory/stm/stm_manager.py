@@ -62,12 +62,13 @@ class STMManager:
         if self._db is not None:
             return self._db
 
-        uris = [self.mongo_uri]
-        if "mongodb:27017" in self.mongo_uri:
-            uris.append("mongodb://admin:admin@localhost:27017/sovereign_ai?authSource=admin")
-            uris.append("mongodb://admin:admin@127.0.0.1:27017/sovereign_ai?authSource=admin")
-        elif "localhost" in self.mongo_uri:
-            uris.append(self.mongo_uri.replace("localhost", "127.0.0.1"))
+        uris = [
+            self.mongo_uri,
+            "mongodb://127.0.0.1:27017/sovereign_ai",
+            "mongodb://localhost:27017/sovereign_ai",
+            "mongodb://admin:admin@127.0.0.1:27017/sovereign_ai?authSource=admin",
+            "mongodb://admin:admin@localhost:27017/sovereign_ai?authSource=admin",
+        ]
 
         for u in uris:
             try:
