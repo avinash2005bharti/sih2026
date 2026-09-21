@@ -1,7 +1,7 @@
 services:
   frontend:
     build:
-      context: ../FRONTEND
+      context: ./FRONTEND
       dockerfile: Dockerfile
     container_name: sovereign-frontend
     restart: unless-stopped
@@ -20,7 +20,7 @@ services:
 
   backend:
     build:
-      context: ../BACKEND
+      context: ./BACKEND
       dockerfile: Dockerfile
     container_name: sovereign-backend
     restart: unless-stopped
@@ -52,7 +52,7 @@ services:
 
   ai-service:
     build:
-      context: ../AI-SERVICES
+      context: ./AI-SERVICES
       dockerfile: Dockerfile
     container_name: sovereign-ai-service
     restart: unless-stopped
