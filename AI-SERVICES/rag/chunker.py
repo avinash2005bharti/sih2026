@@ -87,5 +87,17 @@ class TextChunker:
         logger.info(f"Chunked document into {total} chunks (size={self.chunk_size}, overlap={self.chunk_overlap})")
         return result
 
+    def chunk_document(self, text: str, document_id: str, document_name: str, **kwargs) -> List[TextChunk]:
+        """Convenience method for chunking documents with standard identification metadata."""
+        base_meta = {
+            "document_id": document_id,
+            "document_name": document_name,
+            "filename": document_name,
+            **kwargs
+        }
+        return self.chunk_text(text, base_metadata=base_meta)
+
 
 text_chunker = TextChunker()
+document_chunker = text_chunker
+

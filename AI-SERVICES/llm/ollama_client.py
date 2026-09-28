@@ -39,33 +39,20 @@ import httpx
 
 from core.config import settings
 from core.logging import logger
+from core.hardware import get_hardware_profile, PROFILE_GPU_RTX2050, PROFILE_CPU_ONLY
 
 
 class OllamaClient:
     """
-    CPU-only Ollama client.
-
-    Important:
-    This class ONLY communicates with Ollama.
-
-    It does NOT:
-        - decide which agent to use
-        - execute filesystem tools
-        - create files
-        - create folders
-        - perform RAG
-        - manage Mem0
-        - manage Qdrant
-        - manage Neo4j
-        - perform agent planning
-
-    Those responsibilities belong to the Agent Orchestrator.
+    Local Ollama Client supporting dual hardware profiles:
+    - GPU_RTX2050: NVIDIA GeForce RTX 2050 (4 GB VRAM) with lazy unloading
+    - CPU_ONLY: Lightweight SLMs
     """
 
-    GENERAL_MODEL = "qwen2.5:1.5b"
-    CODING_MODEL = "qwen2.5-coder:1.5b"
-    VISION_MODEL = "moondream:latest"
-    EMBEDDING_MODEL = "nomic-embed-text:latest"
+    GENERAL_MODEL = "qwen3:4b"
+    CODING_MODEL = "qwen2.5-coder:3b"
+    VISION_MODEL = "gemma3:4b"
+    EMBEDDING_MODEL = "nomic-embed-text"
 
     EMBEDDING_MODEL_NAMES = {
         "nomic-embed-text",
@@ -77,25 +64,129 @@ class OllamaClient:
         "moondream:latest",
         "qwen2.5vl",
         "qwen2.5vl:latest",
+        "qwen2.5vl:3b",
+        "qwen3-vl",
+        "qwen3-vl:4b",
+        "qwen3-vl:latest",
+        "gemma3",
+        "gemma3:4b",
     }
 
     def __init__(self, base_url: Optional[str] = None):
         configured_url = base_url or settings.OLLAMA_BASE_URL
-
         self.base_url = configured_url.rstrip("/")
 
-        # CPU-only configuration.
-        #
-        # Ollama uses the OLLAMA_NUM_GPU environment variable.
-        # Setting it to 0 prevents GPU layers from being used.
-        #
-        # This is mainly useful when the Ollama process itself is
-        # started with this environment variable available.
-        self.cpu_only = True
+        hw = get_hardware_profile()
+        self.hardware_profile = hw
+        self.is_gpu = "GPU" in hw.upper() or hw == PROFILE_GPU_RTX2050
+        self.cpu_only = not self.is_gpu
+        self._last_loaded_model: Optional[str] = None
+
+        if self.is_gpu:
+            self.GENERAL_MODEL = getattr(settings, "GPU_MAIN_MODEL", "qwen2.5:1.5b")
+            self.CODING_MODEL = getattr(settings, "GPU_CODER_MODEL", "qwen2.5-coder:1.5b")
+            self.VISION_MODEL = getattr(settings, "GPU_VISION_MODEL", "qwen3-vl:4b")
+        else:
+            self.GENERAL_MODEL = getattr(settings, "CPU_MAIN_MODEL", "qwen2.5:1.5b")
+            self.CODING_MODEL = getattr(settings, "CPU_CODER_MODEL", "qwen2.5-coder:1.5b")
+            self.VISION_MODEL = getattr(settings, "CPU_VISION_MODEL", "moondream")
+
+        self.EMBEDDING_MODEL = getattr(settings, "EMBEDDING_MODEL", "nomic-embed-text")
 
         logger.info(
-            f"[OLLAMA] CPU-only client initialized: {self.base_url}"
+            f"[OLLAMA] Client initialized: {self.base_url} (Hardware Profile: {self.hardware_profile}, GPU: {self.is_gpu})"
         )
+
+    # ============================================================
+    # VRAM EVICTION / LAZY UNLOADING (RTX 2050 4GB CONSTRAINT)
+    # ============================================================
+
+    async def evict_model_if_needed(self, new_model: str) -> None:
+        """
+        For NVIDIA RTX 2050 (4 GB VRAM limit):
+        When switching between distinct large generative models,
+        actively unload previous model using keep_alive: 0 to prevent CUDA OOM.
+        Small models in ALWAYS_WARM_MODELS are never evicted.
+        """
+        if not self.is_gpu or not self._last_loaded_model:
+            self._last_loaded_model = new_model
+            return
+
+        prev = self._last_loaded_model.lower().strip()
+        curr = new_model.lower().strip()
+
+        # Never evict always-warm small models
+        always_warm = [m.strip().lower() for m in
+                       getattr(settings, "ALWAYS_WARM_MODELS", "qwen2.5:0.5b,qwen2.5:1.5b,qwen3:0.6b").split(",")]
+        if prev in always_warm:
+            self._last_loaded_model = new_model
+            return
+
+        # Only evict if changing models and neither is an embedding-only model
+        if prev != curr and "embed" not in curr and "embed" not in prev:
+            logger.info(f"[OLLAMA] RTX 2050 4GB VRAM guard: evicting '{prev}' to load '{curr}'")
+            try:
+                async with self._client(timeout=5.0) as client:
+                    await client.post(
+                        f"{self.base_url}/api/generate",
+                        json={"model": self._last_loaded_model, "keep_alive": 0}
+                    )
+            except Exception as e:
+                logger.debug(f"[OLLAMA] Eviction notice: {e}")
+
+        self._last_loaded_model = new_model
+
+    async def warmup_model(self, model_name: str, keep_alive: str = "-1") -> bool:
+        """
+        Pre-load a model into VRAM by sending a minimal prompt.
+        keep_alive="-1" means keep the model loaded indefinitely.
+        Returns True if successful.
+        """
+        try:
+            logger.info(f"[OLLAMA] Warming up model '{model_name}' (keep_alive={keep_alive})...")
+            async with self._client(timeout=30.0) as client:
+                resp = await client.post(
+                    f"{self.base_url}/api/generate",
+                    json={
+                        "model": model_name,
+                        "prompt": "",
+                        "keep_alive": keep_alive,
+                        "stream": False,
+                    }
+                )
+                if resp.status_code == 200:
+                    logger.info(f"[OLLAMA] ✅ Model '{model_name}' warmed up and loaded")
+                    return True
+                else:
+                    logger.warning(f"[OLLAMA] Warmup returned status {resp.status_code} for '{model_name}'")
+                    return False
+        except Exception as e:
+            logger.warning(f"[OLLAMA] Warmup failed for '{model_name}': {e}")
+            return False
+
+    async def keep_models_warm(self, model_names: List[str]) -> None:
+        """
+        Warm up a list of models concurrently at startup.
+        Only warms models that are actually installed.
+        """
+        import asyncio
+        installed = await self.get_available_models()
+        installed_set = set(m.lower() for m in installed)
+
+        async def _warm(name: str):
+            norm = name.strip().lower()
+            # Check if installed (exact or base match)
+            base = norm.split(":")[0]
+            is_present = norm in installed_set or any(
+                m.split(":")[0] == base for m in installed_set
+            )
+            if is_present:
+                await self.warmup_model(name, keep_alive="-1")
+            else:
+                logger.info(f"[OLLAMA] Skipping warmup for '{name}' — not installed")
+
+        tasks = [_warm(name) for name in model_names]
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     # ============================================================
     # MODEL CLASSIFICATION
@@ -105,11 +196,7 @@ class OllamaClient:
     def is_vision_model(model_name: str) -> bool:
         """
         Determine whether a model supports image input.
-
-        Keep this explicit rather than checking generic strings
-        such as 'vl', which can produce false positives.
         """
-
         if not model_name:
             return False
 
@@ -117,8 +204,10 @@ class OllamaClient:
 
         return (
             normalized in OllamaClient.VISION_MODEL_NAMES
-            or normalized.startswith("moondream:")
-            or normalized.startswith("qwen2.5vl:")
+            or normalized.startswith("gemma3")
+            or normalized.startswith("qwen2.5vl")
+            or normalized.startswith("moondream")
+            or "vl" in normalized
         )
 
     @staticmethod
@@ -126,7 +215,6 @@ class OllamaClient:
         """
         Determine whether a model is an embedding model.
         """
-
         if not model_name:
             return False
 
@@ -219,7 +307,8 @@ class OllamaClient:
                     "status": "ok",
                     "available": True,
                     "url": self.base_url,
-                    "execution": "cpu",
+                    "execution": "gpu" if self.is_gpu else "cpu",
+                    "hardware_profile": self.hardware_profile,
                     "models_available": models,
                     "count": len(models),
                 }
@@ -234,7 +323,8 @@ class OllamaClient:
                 "status": "error",
                 "available": False,
                 "url": self.base_url,
-                "execution": "cpu",
+                "execution": "gpu" if self.is_gpu else "cpu",
+                "hardware_profile": self.hardware_profile,
                 "models_available": [],
                 "count": 0,
                 "detail": (
@@ -505,16 +595,21 @@ class OllamaClient:
             model,
             require_vision=has_images,
         )
+        await self.evict_model_if_needed(effective_model)
 
         payload = {
             "model": effective_model,
             "messages": messages,
             "stream": False,
+            "think": False,
             "keep_alive": getattr(settings, "OLLAMA_KEEP_ALIVE", "0"),
         }
 
         if options:
-            payload["options"] = options
+            opts_copy = dict(options)
+            if "think" in opts_copy:
+                payload["think"] = opts_copy.pop("think")
+            payload["options"] = opts_copy
 
         try:
 
@@ -522,7 +617,7 @@ class OllamaClient:
                 f"[OLLAMA] Chat request | "
                 f"model={effective_model} | "
                 f"vision={has_images} | "
-                f"execution=CPU"
+                f"execution={'GPU_RTX2050' if self.is_gpu else 'CPU_ONLY'}"
             )
 
             async with self._client(timeout=600.0) as client:
@@ -613,23 +708,28 @@ class OllamaClient:
             model,
             require_vision=has_images,
         )
+        await self.evict_model_if_needed(effective_model)
 
         payload = {
             "model": effective_model,
             "messages": messages,
             "stream": True,
+            "think": False,
             "keep_alive": getattr(settings, "OLLAMA_KEEP_ALIVE", "0"),
         }
 
         if options:
-            payload["options"] = options
+            opts_copy = dict(options)
+            if "think" in opts_copy:
+                payload["think"] = opts_copy.pop("think")
+            payload["options"] = opts_copy
 
         try:
 
             logger.info(
                 f"[OLLAMA] Streaming request | "
                 f"model={effective_model} | "
-                f"CPU"
+                f"execution={'GPU_RTX2050' if self.is_gpu else 'CPU_ONLY'}"
             )
 
             async with self._client(timeout=900.0) as client:
@@ -726,6 +826,7 @@ class OllamaClient:
         model: str,
         messages: List[Dict[str, Any]],
         options: Optional[Dict[str, Any]] = None,
+        timeout: float = 45.0,
     ) -> Dict[str, Any]:
         """
         Ask Ollama for structured JSON.
@@ -739,6 +840,7 @@ class OllamaClient:
         """
 
         effective_model = await self.resolve_model(model)
+        await self.evict_model_if_needed(effective_model)
 
         # Never allow embedding model to produce agent JSON.
         if self.is_embedding_model(effective_model):
@@ -753,17 +855,23 @@ class OllamaClient:
             "messages": messages,
             "format": "json",
             "stream": False,
+            "think": False,
             "keep_alive": getattr(settings, "OLLAMA_KEEP_ALIVE", "0"),
         }
 
+        opts = {"num_predict": 512, "temperature": 0.2}
         if options:
-            payload["options"] = options
+            opts_copy = dict(options)
+            if "think" in opts_copy:
+                payload["think"] = opts_copy.pop("think")
+            opts.update(opts_copy)
+        payload["options"] = opts
 
         content = ""
 
         try:
 
-            async with self._client(timeout=600.0) as client:
+            async with self._client(timeout=timeout) as client:
 
                 response = await client.post(
                     f"{self.base_url}/api/chat",
@@ -838,6 +946,7 @@ class OllamaClient:
         """
 
         effective_model = await self.resolve_model(model)
+        await self.evict_model_if_needed(effective_model)
 
         if self.is_embedding_model(effective_model):
 

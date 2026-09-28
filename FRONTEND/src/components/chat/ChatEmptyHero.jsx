@@ -1,88 +1,92 @@
 import React from 'react';
-import { Shield, FileText, PlusSquare, FolderOpen, Sparkles } from 'lucide-react';
+import { FileText, Sparkles, ChevronRight } from 'lucide-react';
 import { useChat } from '../../context/ChatContext';
-import { Link } from 'react-router-dom';
+import swarajLogo from '../../asset/swaraj.logo-removebg-preview.png';
 
 const SUGGESTED_PROMPTS = [
-  'Summarize the key compliance points from the latest inspection report.',
+  'Summarize key compliance points from the latest inspection report.',
   'Analyze hydraulic pressure variance in compressor line B.',
   'Identify potential safety hazards in our boiler maintenance SOP.',
   'Draft an executive briefing based on uploaded technical manuals.',
+  'Generate Python validation script for telemetry logs.',
 ];
 
 const ChatEmptyHero = ({ onSelectPrompt }) => {
-  const { agents, setSelectedAgent } = useChat();
+  const { agents, switchAgent, activeAgentState } = useChat();
 
   const handleAgentSelect = (agent) => {
-    setSelectedAgent(agent);
+    switchAgent(agent);
     if (agent.defaultPrompt) {
       onSelectPrompt(agent.defaultPrompt);
     }
   };
 
   return (
-    <div className="flex flex-col items-center justify-center max-w-3xl mx-auto px-4 py-8 text-center animate-in fade-in duration-300">
-      {/* Brand Icon */}
-      <div className="w-14 h-14 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mb-4 shadow-sm">
-        <Shield className="w-7 h-7 fill-blue-100" />
+    <div className="flex flex-col items-center justify-center max-w-3xl mx-auto px-4 py-4 text-center animate-in fade-in duration-300 w-full">
+      {/* Compact Welcome Strip */}
+      <div className="flex flex-col items-center mb-4">
+        <div className="relative mb-2">
+          <img
+            src={swarajLogo}
+            alt="SWaRaj Logo"
+            className="w-12 h-12 object-contain rounded-xl shadow-xs border border-slate-200/90 bg-white p-1"
+          />
+        </div>
+
+        <h1 className="text-lg sm:text-xl font-extrabold tracking-tight text-slate-900 flex items-center gap-1.5">
+          <span>SWaRaj</span>
+        </h1>
+
+        <p className="text-xs text-slate-500 font-medium max-w-md mt-0.5">
+          Sovereign Workbench for Real-time Autonomous Judgment
+        </p>
       </div>
 
-      {/* Heading */}
-      <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 mb-1.5">
-        Sovereign AI Workbench
-      </h1>
-
-      {/* Subtitle */}
-      <p className="text-xs sm:text-sm text-slate-500 max-w-lg leading-relaxed mb-6">
-        Air-gapped organizational intelligence. Attach technical specs, manuals, or telemetry logs below to begin analysis.
-      </p>
-
-      {/* Starter Prompts */}
-      <div className="w-full max-w-2xl mb-6">
-        <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2.5 flex items-center justify-center gap-1.5">
+      {/* Quick Analysis Prompts - Horizontal Scrollable Chip List */}
+      <div className="w-full max-w-2xl mb-4">
+        <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2 flex items-center justify-center gap-1.5">
           <Sparkles className="w-3 h-3 text-blue-500" />
           <span>Quick Analysis Prompts</span>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-left">
+        <div className="flex items-center gap-2 overflow-x-auto pb-1.5 px-1 no-scrollbar scroll-smooth">
           {SUGGESTED_PROMPTS.map((prompt, idx) => (
             <button
               key={idx}
               onClick={() => onSelectPrompt(prompt)}
-              className="p-3 bg-white hover:bg-slate-50 border border-slate-200/90 rounded-xl text-xs text-slate-700 hover:text-slate-900 shadow-2xs hover:border-slate-300 transition-all leading-snug group flex items-start gap-2"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-blue-50/70 border border-slate-200 hover:border-blue-300 text-xs text-slate-700 hover:text-blue-800 rounded-full whitespace-nowrap shadow-2xs hover:shadow-xs transition-all flex-shrink-0 group"
             >
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0 group-hover:scale-125 transition-transform" />
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-500 group-hover:scale-125 transition-transform" />
               <span>{prompt}</span>
             </button>
           ))}
         </div>
       </div>
 
-      {/* Specialized Agents Grid (from backend) */}
+      {/* Specialized Agent Chips (Horizontal) */}
       {agents && agents.length > 0 && (
         <div className="w-full max-w-2xl">
-          <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2.5">
+          <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
             Active Specialized Agents
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-left">
-            {agents.slice(0, 3).map((agent) => (
-              <button
-                key={agent._id}
-                onClick={() => handleAgentSelect(agent)}
-                className="p-3 bg-white hover:bg-slate-50 border border-slate-200/90 rounded-xl shadow-2xs text-left hover:border-slate-300 transition-all group"
-              >
-                <div className="flex items-center gap-2 mb-1">
-                  <div className="w-6 h-6 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0">
-                    <FileText className="w-3.5 h-3.5" />
-                  </div>
-                  <span className="text-xs font-semibold text-slate-900 truncate">
-                    {agent.name}
-                  </span>
-                </div>
-                <div className="text-[11px] text-slate-400 truncate">
-                  {agent.description || 'Specialized agent'}
-                </div>
-              </button>
-            ))}
+          <div className="flex items-center justify-center gap-2 flex-wrap">
+            {agents.slice(0, 4).map((agent) => {
+              const isSelected = activeAgentState?.slug === agent.slug || activeAgentState?.name === agent.name;
+              return (
+                <button
+                  key={agent._id}
+                  onClick={() => handleAgentSelect(agent)}
+                  className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs transition-all shadow-2xs border ${
+                    isSelected
+                      ? 'bg-blue-50 border-blue-300 text-blue-700 font-semibold'
+                      : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-700'
+                  }`}
+                >
+                  <FileText className={`w-3.5 h-3.5 ${isSelected ? 'text-blue-600' : 'text-slate-400'}`} />
+                  <span>{agent.name}</span>
+                  {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-blue-600" />}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}

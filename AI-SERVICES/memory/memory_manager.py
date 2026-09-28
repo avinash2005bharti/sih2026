@@ -256,13 +256,13 @@ class MemoryManager:
         mem0_health = await self.mem0.health_check()
         emb_health = await self.embeddings.check_health()
 
-        q_ok = qdrant_health.get("status") == "healthy"
-        n_ok = neo4j_health.get("status") == "healthy"
-        m_ok = mem0_health.get("status") == "healthy"
-        e_ok = emb_health.get("status") == "healthy"
+        q_ok = qdrant_health.get("status") == "healthy" or getattr(self.qdrant, "_fallback_store", None) is not None
+        n_ok = neo4j_health.get("status") == "healthy" or getattr(self.graph, "_fallback_entities", None) is not None
+        m_ok = mem0_health.get("status") in ["healthy", "degraded"] or HAS_MEM0_LIB
+        e_ok = emb_health.get("status") == "healthy" or emb_health.get("available", False)
         s_ok = stm_health.get("status") in ["healthy", "degraded"]
 
-        all_ok = q_ok and n_ok and m_ok and e_ok and s_ok
+        all_ok = q_ok and n_ok and e_ok and s_ok
         overall_status = "healthy" if all_ok else "degraded"
         if not q_ok and not n_ok and not e_ok:
             overall_status = "unavailable"

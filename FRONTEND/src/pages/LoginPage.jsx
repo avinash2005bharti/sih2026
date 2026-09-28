@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
-import { Shield, Lock, Mail, ArrowRight, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Lock, Mail, ArrowRight, CheckCircle2, AlertCircle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import Button from '../components/common/Button';
+import swarajLogo from '../asset/swaraj.logo-removebg-preview.png';
 
 const LoginPage = () => {
   const navigate = useNavigate();
@@ -34,27 +35,34 @@ const LoginPage = () => {
 
   return (
     <div className="min-h-screen w-full flex items-center justify-center bg-[#f8fafc] px-4 py-8 relative">
-      {/* Decorative Air-Gap Security Watermark */}
-      <div className="absolute top-6 left-6 flex items-center gap-2">
-        <div className="w-7 h-7 rounded-lg bg-[#0a1128] flex items-center justify-center text-blue-400">
-          <Shield className="w-4 h-4 fill-blue-500/20" />
+      {/* Decorative Brand Header */}
+      <div className="absolute top-6 left-6 flex items-center gap-2.5">
+        <img
+          src={swarajLogo}
+          alt="SWaRaj Logo"
+          className="w-8 h-8 rounded-lg object-contain border border-slate-200 bg-white p-0.5 shadow-2xs"
+        />
+        <div className="flex items-center gap-1.5">
+          <span className="font-extrabold text-sm tracking-tight text-slate-900">
+            SWaRaj
+          </span>
+          <span className="text-[9px] px-1.5 py-0.2 bg-blue-50 text-blue-700 font-mono font-bold rounded border border-blue-200">
+            AI
+          </span>
         </div>
-        <span className="font-semibold text-xs tracking-tight text-slate-900">
-          Sovereign AI Workbench
-        </span>
       </div>
 
       <div className="w-full max-w-md bg-white border border-slate-200/90 rounded-2xl shadow-card p-6 sm:p-8 animate-in fade-in duration-300">
         {/* Card Header */}
         <div className="text-center mb-6">
-          <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mx-auto mb-3 shadow-2xs">
-            <Shield className="w-6 h-6 fill-blue-100" />
+          <div className="w-14 h-14 rounded-2xl bg-white border border-slate-200 p-1 flex items-center justify-center mx-auto mb-3 shadow-2xs">
+            <img src={swarajLogo} alt="SWaRaj Logo" className="w-full h-full object-contain" />
           </div>
           <h2 className="text-xl font-bold text-slate-900 tracking-tight">
-            Air-Gapped Operator Access
+            SWaRaj Operator Access
           </h2>
           <p className="text-xs text-slate-500 mt-1">
-            Sign in to access confidential organizational intelligence.
+            Sign in to access Sovereign Workbench for Real-time Autonomous Judgment.
           </p>
         </div>
 

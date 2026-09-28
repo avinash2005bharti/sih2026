@@ -29,3 +29,5 @@ class CodingAgent(BaseAgent):
         return await self.execute(task)
 
 coding_agent = CodingAgent()
+code_agent = coding_agent
+CodeAgent = CodingAgent

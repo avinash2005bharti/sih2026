@@ -456,12 +456,19 @@ class ContextBuilder:
             prompt_sections.append(f"### Knowledge Graph Insights (Neo4j):\n{graph_ctx}")
 
         if doc_ctx:
-            prompt_sections.append(
-                "### Retrieved Document Evidence (RAG):\n" + doc_ctx +
-                "\n\nUse this evidence when answering. Cite the source labels. Do not claim the documents say anything not present above."
+            rag_contract = (
+                "### Retrieved Document Evidence (RAG):\n" + doc_ctx + "\n\n"
+                "MANDATORY RAG ANSWER CONTRACT:\n"
+                "- You MUST answer using the supplied retrieved context above.\n"
+                "- If the answer exists in the context, answer it directly and accurately.\n"
+                "- Do NOT ask the user to provide information that already exists in the retrieved context.\n"
+                "- Do NOT state that you cannot access the document if retrieval succeeded.\n"
+                "- For document questions, cite the source name and page number if available (e.g. [inspection_report.pdf — Page 7]).\n"
+                "- If the answer is genuinely absent from the retrieved evidence, explicitly state that the information was not found in the uploaded document."
             )
+            prompt_sections.append(rag_contract)
         elif intent == QueryIntent.DOCUMENT_RAG:
-            prompt_sections.append("### Retrieved Document Evidence (RAG):\nNo sufficiently relevant document context was retrieved. State that clearly; do not invent document evidence.")
+            prompt_sections.append("### Retrieved Document Evidence (RAG):\nNo sufficiently relevant document context was retrieved from the database. State that clearly; do not invent document evidence.")
 
         # Add explicit instruction for conversational and memory accuracy
         prompt_sections.append(

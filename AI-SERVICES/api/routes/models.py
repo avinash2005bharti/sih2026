@@ -37,10 +37,12 @@ class ModelRoleUpdate(BaseModel):
     """Request to assign a model to a role."""
     role: str = Field(..., description="Role name: chat, coding, vision, or embedding")
     model: str = Field(..., description="Model name installed in local Ollama")
+    is_admin: bool = Field(default=False, description="Admin authorization flag")
 
 
 class PullModelRequest(BaseModel):
     model: str
+    is_admin: bool = Field(default=False, description="Admin authorization flag")
 
 
 @router.get("/models", response_model=ModelsResponse, summary="List available models")
@@ -142,9 +144,12 @@ async def get_model_roles():
 async def update_model_role(payload: ModelRoleUpdate):
     """
     Configure which installed local Ollama model is used for each role.
-    Allowed roles: 'chat', 'coding', 'vision', 'embedding'.
+    Restricted to admin users.
     """
-    valid_roles = ["chat", "coding", "vision", "embedding"]
+    if not payload.is_admin:
+        raise HTTPException(status_code=403, detail="Admin privileges required to modify model configuration.")
+
+    valid_roles = ["chat", "coding", "vision", "embedding", "general", "planner", "router"]
     if payload.role not in valid_roles:
         raise HTTPException(
             status_code=400,
@@ -159,9 +164,52 @@ async def update_model_role(payload: ModelRoleUpdate):
     }
 
 
+@router.get("/models/registry", summary="List model registry entries with hardware profiles")
+async def get_model_registry(is_admin: bool = False):
+    """
+    Get full model registry with status, role, capabilities, hardware profile,
+    and enabled/disabled status.
+    """
+    from llm.model_registry import model_registry
+    from core.hardware import get_hardware_profile
+
+    hw_profile = get_hardware_profile()
+    installed = model_registry.get_installed_models()
+
+    entries = []
+    for model_meta in model_registry.list_models():
+        is_inst = model_registry.is_installed(model_meta.name)
+        entries.append({
+            "name": model_meta.name,
+            "provider": model_meta.provider,
+            "type": model_meta.type,
+            "role": model_meta.role,
+            "capabilities": model_meta.capabilities,
+            "hardware": model_meta.hardware,
+            "vision": model_meta.vision,
+            "tools": model_meta.tools,
+            "embedding": model_meta.embedding,
+            "enabled": model_meta.enabled,
+            "status": "installed" if is_inst else "available_to_pull",
+            "priority": model_meta.priority,
+            "fallback_model": model_meta.fallback_model,
+            "vram_estimate_mb": model_meta.vram_estimate_mb,
+            "description": model_meta.description
+        })
+
+    return {
+        "success": True,
+        "hardware_profile": hw_profile,
+        "installed_count": len(installed),
+        "models": entries
+    }
+
+
 @router.post("/models/pull", summary="Pull a model from Ollama")
 async def pull_model(request: PullModelRequest):
-    """Pull/download a model into the local Ollama instance upon explicit user/admin request."""
+    """Pull/download a model into the local Ollama instance upon explicit admin request."""
+    if not request.is_admin:
+        raise HTTPException(status_code=403, detail="Admin privileges required to pull models.")
     model_name = request.model.strip()
     if not model_name:
         raise HTTPException(status_code=400, detail="Model name is required")

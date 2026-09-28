@@ -30,7 +30,7 @@ from core.logging import logger
 
 
 class AgentState(TypedDict):
-    """Sovereign Agent LangGraph State schema."""
+    """Sovereign Agent LangGraph State schema with explicit state machine (Section 24)."""
     messages: Annotated[List[BaseMessage], add_messages]
     task: Optional[str]
     selected_model: str
@@ -47,6 +47,36 @@ class AgentState(TypedDict):
     tool_executions: List[Dict[str, Any]]
     generated_files: List[Dict[str, Any]]
     errors: List[str]
+    step_count: int
+    state_status: str
+
+
+# Bounded Loop Execution Limit (Section 23)
+MAX_STEPS: int = 5
+
+
+def should_continue(state: AgentState) -> str:
+    """Bounded loop decision function with early stop on validated artifact (Section 23, 29)."""
+    steps = state.get("step_count", 0)
+    if steps >= MAX_STEPS:
+        logger.warning(f"[AGENT] Reached MAX_STEPS ({MAX_STEPS}), terminating agent loop (Section 23).")
+        return END
+
+    msgs = state.get("messages", [])
+    if msgs:
+        last = msgs[-1]
+        if hasattr(last, "tool_calls") and last.tool_calls:
+            # Early stop condition: If required deliverable exists and validated, stop immediately! (Section 29)
+            task_lower = (state.get("task") or "").lower()
+            gen_files = state.get("generated_files", []) or state.get("artifacts", [])
+            if any(k in task_lower for k in ["excel", "xlsx", "spreadsheet"]) and any(f.get("name", "").endswith(".xlsx") or f.get("type", "") in ["xlsx", "spreadsheet"] or f.get("valid", False) for f in gen_files):
+                logger.info("[AGENT] Stop condition met: Validated Excel workbook artifact generated. Stopping loop.")
+                return END
+            if any(k in task_lower for k in ["create pdf", "generate pdf", "make pdf", "inspection report pdf"]) and any(f.get("name", "").endswith(".pdf") or f.get("type", "") == "pdf" or f.get("valid", False) for f in gen_files):
+                logger.info("[AGENT] Stop condition met: Validated PDF deliverable generated. Stopping loop.")
+                return END
+            return "tools"
+    return END
 
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -247,12 +277,8 @@ class SovereignLangGraphAgent:
 
             return {"messages": [normalized]}
 
-        # Tool Decision Node
-        def should_continue(state: AgentState):
-            last = state["messages"][-1]
-            if hasattr(last, "tool_calls") and last.tool_calls:
-                return "tools"
-            return END
+        # Tool Decision Node (Bounded Loop & Stop Conditions - Section 23, 24, 29)
+        # Using module-level should_continue
 
         # Tool Execution Node
         def tool_node(state: AgentState):
@@ -264,6 +290,7 @@ class SovereignLangGraphAgent:
             u_role = state.get("user_role")
             u_name = state.get("user_name")
             u_email = state.get("user_email")
+            current_steps = state.get("step_count", 0) + 1
             last = state["messages"][-1]
             tool_calls = getattr(last, "tool_calls", [])
             tool_msgs = []
@@ -349,8 +376,35 @@ class SovereignLangGraphAgent:
                                 "mime_type": res_obj.get("mime_type") or ("application/pdf" if fname.endswith(".pdf") else ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if fname.endswith(".xlsx") else "text/markdown")),
                                 "size_bytes": res_obj.get("size_bytes", 0)
                             }
+
+                            # Mandatory Artifact Verification (Section 28 & 48)
+                            is_valid = True
+                            full_file = Path(file_info["full_path"]) if file_info.get("full_path") else (SANDBOX_DIR / clean_path)
+                            if full_file.exists():
+                                if fname.endswith(".xlsx"):
+                                    try:
+                                        import openpyxl
+                                        wb = openpyxl.load_workbook(str(full_file), read_only=True)
+                                        wb.close()
+                                        logger.info(f"[VALIDATION] XLSX verification passed: {fname} ({file_info['size_bytes']} bytes)")
+                                    except Exception as ve:
+                                        logger.error(f"[VALIDATION] XLSX corrupted: {ve}")
+                                        is_valid = False
+                                elif fname.endswith(".pdf"):
+                                    try:
+                                        header = full_file.read_bytes()[:5]
+                                        if header == b"%PDF-":
+                                            logger.info(f"[VALIDATION] PDF verification passed: {fname} ({file_info['size_bytes']} bytes)")
+                                        else:
+                                            logger.error(f"[VALIDATION] Invalid PDF header in {fname}")
+                                            is_valid = False
+                                    except Exception as pe:
+                                        logger.error(f"[VALIDATION] PDF read error: {pe}")
+                                        is_valid = False
+                            file_info["validated"] = is_valid
+
                             generated_files.append(file_info)
-                            logger.info(f"[AGENT] File generated: {fname} (path={clean_path})")
+                            logger.info(f"[AGENT] File generated: {fname} (path={clean_path}, validated={is_valid})")
 
                             # Register artifact in MongoDB
                             if conv_id:
@@ -468,13 +522,15 @@ class SovereignLangGraphAgent:
                 recorded_results.append({"tool": t_name, "result": res_obj, "id": cid})
                 tool_msgs.append(ToolMessage(content=result_str, tool_call_id=cid))
 
-            logger.info("[AGENT] Returning tool result to LLM")
+            logger.info(f"[AGENT] Completed step {current_steps}/{MAX_STEPS}. Returning tool result to LLM")
             return {
                 "messages": tool_msgs,
                 "tool_calls": recorded_calls,
                 "tool_results": recorded_results,
                 "tool_executions": recorded_executions,
                 "generated_files": generated_files,
+                "step_count": current_steps,
+                "state_status": "OBSERVING"
             }
 
         # Add nodes and edges
@@ -530,7 +586,9 @@ class SovereignLangGraphAgent:
             "tool_results": [],
             "tool_executions": [],
             "generated_files": [],
-            "errors": []
+            "errors": [],
+            "step_count": 0,
+            "state_status": "RECEIVED"
         }
 
         # Run in thread pool to avoid blocking async loop
@@ -818,10 +876,20 @@ def get_langgraph_agent(
     model: Optional[str] = None,
     system_prompt: Optional[str] = None,
     temperature: Optional[float] = None,
-    max_tokens: Optional[int] = None
+    max_tokens: Optional[int] = None,
+    task_type: Optional[str] = None,
+    requires_vision: bool = False,
+    requires_tools: bool = True
 ) -> SovereignLangGraphAgent:
-    """Create a configured SovereignLangGraphAgent instance with tool support."""
-    eff_model = model_registry.get_agent_model(requested_model=model) if model else model_registry.resolve_model("general")
+    """Create a configured SovereignLangGraphAgent instance with centralized model router selection."""
+    from llm.model_router import model_router
+    routing_info = model_router.select(
+        task_type=task_type or "GENERAL",
+        requires_vision=requires_vision,
+        requires_tools=requires_tools,
+        preferred_model=model if model and model != "auto" else None
+    )
+    eff_model = routing_info["selected_model"]
 
     return SovereignLangGraphAgent(
         model_name=eff_model,

@@ -4,6 +4,7 @@ const {
     createAgent,
     getAgents,
     getAgentById,
+    getActiveAgent,
     updateAgent,
     deleteAgent
 } = require("../controllers/agent.controller");
@@ -15,6 +16,8 @@ const router = express.Router();
 router.post("/", authMiddleware.authUser, authMiddleware.adminMiddleware, createAgent);
 
 router.get("/", authMiddleware.authUser, getAgents);
+
+router.get("/active", authMiddleware.authUser, getActiveAgent);
 
 router.get("/:agentId", authMiddleware.authUser, getAgentById);
 

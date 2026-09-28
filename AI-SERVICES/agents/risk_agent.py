@@ -4,4 +4,5 @@ class RiskAnalysisAgent(BaseAgent):
     def __init__(self):
         super().__init__("RiskAnalysisAgent")
 
+RiskAgent = RiskAnalysisAgent
 risk_agent = RiskAnalysisAgent()

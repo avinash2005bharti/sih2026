@@ -75,10 +75,10 @@ class MultimodalOrchestrator:
                 "error": str(ocr_err)
             }
 
-        # 2. Run Moondream Vision (Visual scene understanding)
+        # 2. Run Vision (Visual scene understanding)
         if progress_cb:
             try:
-                progress_cb("vision_start", f"Running visual scene analysis via local {settings.VISION_MODEL}")
+                progress_cb("vision_start", f"Running visual scene analysis via local {self.vision.model}")
             except Exception:
                 pass
 

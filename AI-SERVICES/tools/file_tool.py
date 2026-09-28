@@ -381,3 +381,14 @@ class FileDiffTool(BaseTool):
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+
+read_file_tool = ReadFileTool()
+write_file_tool = WriteFileTool()
+list_directory_tool = ListDirectoryTool()
+create_directory_tool = CreateDirectoryTool()
+delete_file_tool = DeleteFileTool()
+move_file_tool = MoveFileTool()
+patch_file_tool = PatchFileTool()
+diff_file_tool = FileDiffTool()
+

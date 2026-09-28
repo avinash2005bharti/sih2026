@@ -725,5 +725,80 @@ class DocumentStore:
             logger.error(f"[DocumentStore] sync_processed_status error: {e}")
             return False
 
+    def count_documents(
+        self,
+        user_id: Optional[str] = None,
+        is_admin: bool = True
+    ) -> int:
+        """
+        Count total documents available to the user with RBAC rules directly from MongoDB / disk.
+        Deterministic, zero-LLM metadata operation (Section 5).
+        """
+        db = self._get_db()
+        if db is not None:
+            try:
+                query: Dict[str, Any] = {}
+                if not is_admin:
+                    admin_ids = []
+                    try:
+                        admin_users = list(db.users.find(
+                            {"$or": [{"isAdmin": True}, {"role": "admin"}]},
+                            {"_id": 1}
+                        ))
+                        admin_ids = [u["_id"] for u in admin_users]
+                    except Exception:
+                        pass
+                    user_or_clauses: List[Dict[str, Any]] = [
+                        {"isUploadedByAdmin": True},
+                        {"uploaderRole": "admin"},
+                        {"uploadedBy": {"$in": admin_ids}},
+                        {"uploadedBy": {"$exists": False}},
+                        {"uploadedBy": None}
+                    ]
+                    if user_id:
+                        user_oid = ObjectId(user_id) if ObjectId.is_valid(user_id) else user_id
+                        user_or_clauses.append({"uploadedBy": user_oid})
+                        user_or_clauses.append({"uploadedBy": str(user_id)})
+                    query["$or"] = user_or_clauses
+
+                count = db.documents.count_documents(query)
+                return count
+            except Exception as e:
+                logger.error(f"[DocumentStore] count_documents MongoDB error: {e}")
+
+        # Fallback to listed documents length across disk/workspace
+        return len(self.list_documents(limit=1000, user_id=user_id, is_admin=is_admin))
+
+    def get_document_metadata(self, doc_id_or_name: str) -> Optional[Dict[str, Any]]:
+        """Return structured canonical metadata for a document without heavy full text."""
+        doc = self.get_document(doc_id_or_name)
+        if not doc:
+            return None
+        return {
+            "document_id": doc.get("document_id") or doc.get("_id"),
+            "name": doc.get("name") or doc.get("filename"),
+            "filename": doc.get("filename") or doc.get("originalName") or doc.get("name"),
+            "mime_type": doc.get("mimeType", "application/octet-stream"),
+            "size": doc.get("fileSize") or doc.get("file_size", 0),
+            "status": doc.get("processingStatus", "ready"),
+            "chunk_count": doc.get("metadata", {}).get("chunksCount", 0) if isinstance(doc.get("metadata"), dict) else 0,
+            "uploaded_at": doc.get("createdAt", ""),
+            "storage_type": doc.get("storageType", "local"),
+            "qdrant_collection": settings.QDRANT_COLLECTION,
+            "embedding_model": settings.EMBEDDING_MODEL
+        }
+
+    def get_document_chunks(self, doc_id_or_name: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Return indexed chunks for a document from Qdrant or text chunker."""
+        doc = self.get_document(doc_id_or_name)
+        if not doc:
+            return []
+        text = doc.get("content") or doc.get("full_text") or doc.get("extractedText") or ""
+        if not text:
+            return []
+        meta = {"document_id": doc.get("document_id") or doc.get("_id"), "name": doc.get("name")}
+        chunks = text_chunker.chunk_text(text, base_metadata=meta)
+        return [{"chunk_id": f"{meta['document_id']}_{i}", "text": c.text, "index": i} for i, c in enumerate(chunks[:limit])]
+
 
 document_store = DocumentStore()

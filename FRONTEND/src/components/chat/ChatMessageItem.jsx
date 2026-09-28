@@ -23,6 +23,7 @@ import {
   Layers,
 } from 'lucide-react';
 import { useChat } from '../../context/ChatContext';
+import swarajLogo from '../../asset/swaraj.logo-removebg-preview.png';
 
 /**
  * Lightweight, robust syntax highlighter for code blocks
@@ -612,8 +613,8 @@ const ChatMessageItem = ({ message }) => {
               <User className="w-3.5 h-3.5" />
             </div>
           ) : (
-            <div className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center shadow-xs">
-              <Shield className="w-4 h-4 fill-white/20" />
+            <div className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center shadow-xs overflow-hidden">
+              <img src={swarajLogo} alt="SWaRAJ" className="w-full h-full object-cover" />
             </div>
           )}
         </div>
@@ -623,7 +624,7 @@ const ChatMessageItem = ({ message }) => {
           {/* Metadata Header */}
           <div className="flex items-center gap-2 mb-1 flex-wrap">
             <span className="text-xs font-semibold text-slate-900">
-              {isUser ? 'You' : 'Sovereign Assistant'}
+              {isUser ? 'You' : 'SWaRAJ'}
             </span>
 
             {!isUser && (

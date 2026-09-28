@@ -1,231 +1,368 @@
 """
-Centralized SLM Model Registry for Sovereign AI Workbench.
+Model Registry for Sovereign AI Workbench.
+SIH 26117 — Dual Hardware Aware (RTX 2050 4GB GPU & CPU-Only Profiles).
 
-8-9 Model SLM Specialist Architecture:
-- router: qwen3:0.6b (fallback: qwen2.5:0.5b, then qwen2.5:1.5b)
-- general: qwen2.5:0.5b (fallback: qwen2.5:1.5b)
-- planner: llama3.2:1b (fallback: qwen2.5:1.5b)
-- document: gemma3:1b (fallback: qwen2.5:1.5b)
-- coding: qwen2.5-coder:1.5b (fallback: qwen2.5-coder:0.5b, then qwen2.5:1.5b)
-- risk: qwen2.5:1.5b (fallback: qwen2.5:0.5b)
-- compliance: qwen2.5:1.5b (fallback: qwen2.5:0.5b)
-- safety: qwen2.5:1.5b (fallback: qwen2.5:0.5b)
-- maintenance: qwen2.5:1.5b (fallback: qwen2.5:0.5b)
-- reporting: qwen2.5:1.5b (fallback: qwen2.5:0.5b)
-- critic: smollm2:1.7b (fallback: qwen2.5:0.5b, then qwen2.5:1.5b)
-- vision: moondream (fallback: moondream:latest, qwen2.5vl:3b)
-- embedding: nomic-embed-text (fallback: nomic-embed-text:latest)
-
-Key Principles:
-- Single source of truth for model names and specialist roles.
-- Dynamic Ollama installed model detection.
-- Graceful fallbacks so the system never crashes if a model is missing.
-- Administrator reconfigurability.
-- Multiple logical specialist roles can safely map to the same physical SLM.
-- CPU-first execution (single model active per inference step).
+Hardware verified 2026-09-25:
+  GPU: NVIDIA RTX 2050 4GB
+  Installed models: qwen3:0.6b, qwen3:1.7b, qwen3:4b, qwen2.5:0.5b, qwen2.5:1.5b,
+                    qwen2.5-coder:1.5b, qwen2.5-coder:3b, qwen3-vl:4b, qwen2.5vl:3b,
+                    nomic-embed-text:latest
 """
 
+from typing import Dict, Any, List, Optional
 from copy import deepcopy
-from typing import Optional, Dict, Any, List
+from pydantic import BaseModel, Field
 import httpx
 
 from core.logging import logger
 from core.config import settings
+from core.hardware import get_hardware_profile, PROFILE_GPU_RTX2050, PROFILE_CPU_ONLY
+
+
+class ModelMetadata(BaseModel):
+    """Structured metadata for local AI models."""
+    name: str = Field(..., description="Ollama model tag or identifier")
+    provider: str = Field(default="ollama", description="Local provider: ollama or local")
+    endpoint: str = Field(default="http://127.0.0.1:11434", description="Provider endpoint")
+    type: str = Field(default="llm", description="Model category: llm, vlm, embedding, classifier")
+    role: List[str] = Field(default_factory=list, description="Supported roles")
+    capabilities: List[str] = Field(default_factory=list, description="Detailed capabilities")
+    task_types: List[str] = Field(default_factory=list, description="Primary task types")
+    modality: str = Field(default="text", description="Modality: text, multimodal, embedding")
+    context_length: int = Field(default=32768, description="Context window size")
+    hardware: List[str] = Field(default_factory=lambda: ["gpu", "cpu"], description="Supported hardware profiles")
+    vision: bool = Field(default=False, description="Supports multimodal visual inputs")
+    tools: bool = Field(default=False, description="Supports tool/function calling")
+    embedding: bool = Field(default=False, description="Produces vector embeddings")
+    enabled: bool = Field(default=True, description="Whether the model is enabled for routing")
+    priority: int = Field(default=1, description="Selection priority (lower = higher priority)")
+    fallback_model: Optional[str] = Field(default=None, description="Primary fallback model name")
+    temperature: float = Field(default=0.7, description="Default sampling temperature")
+    timeout: float = Field(default=60.0, description="Inference timeout in seconds")
+    vram_estimate_mb: int = Field(default=2000, description="Approximate VRAM usage in MB")
+    gpu_suitability: str = Field(default="ideal", description="GPU suitability on RTX 2050")
+    description: str = Field(default="", description="Human-readable description")
 
 
 # ============================================================
-# SPECIALIST SLM DEFINITION REGISTRY
+# MASTER MODEL DEFINITIONS (SIH 26117 Centralized Model Registry)
 # ============================================================
 
-MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {
-    "router": {
+ALL_MODELS: Dict[str, Dict[str, Any]] = {
+    # ─── Ultra-fast Fallback / Routing / Greetings ──────────
+    "qwen2.5:0.5b": {
+        "name": "qwen2.5:0.5b",
         "provider": "ollama",
-        "model": "qwen3:0.6b",
-        "fallbacks": ["qwen2.5:0.5b", "qwen2.5:1.5b"],
-        "capabilities": ["intent_classification", "routing", "structured_json"],
-        "description": "Fast deterministic/SLM request routing & intent classification",
-        "tool_calling": False,
+        "endpoint": "http://127.0.0.1:11434",
+        "type": "classifier",
+        "role": ["fallback", "simple", "greeting", "classifier", "router"],
+        "capabilities": ["classification", "routing", "greetings", "trivial_response"],
+        "task_types": ["SIMPLE_GREETING", "TRIVIAL_CLASSIFICATION"],
+        "modality": "text",
+        "context_length": 32768,
+        "hardware": ["gpu", "cpu"],
+        "vision": False,
+        "tools": False,
+        "embedding": False,
+        "enabled": True,
+        "priority": 1,
+        "fallback_model": None,
+        "temperature": 0.2,
+        "timeout": 30.0,
+        "vram_estimate_mb": 400,
+        "gpu_suitability": "ideal",
+        "description": "Ultra-fast classification / simple routing / greetings (397MB) ✅ keep warm"
     },
-    "general": {
+
+    # ─── Lightweight Intent Classifier / Extraction ────────
+    "qwen3:0.6b": {
+        "name": "qwen3:0.6b",
         "provider": "ollama",
-        "model": "qwen2.5:0.5b",
-        "fallbacks": ["qwen2.5:1.5b"],
-        "capabilities": ["general_qa", "chat", "rewrite", "reasoning"],
-        "description": "General conversational assistance and text synthesis",
-        "tool_calling": True,
+        "endpoint": "http://127.0.0.1:11434",
+        "type": "classifier",
+        "role": ["classifier", "router", "extractor"],
+        "capabilities": ["intent_classification", "routing", "structured_json", "simple_extraction"],
+        "task_types": ["INTENT_CLASSIFICATION", "ROUTING", "STRUCTURED_EXTRACTION"],
+        "modality": "text",
+        "context_length": 32768,
+        "hardware": ["gpu", "cpu"],
+        "vision": False,
+        "tools": False,
+        "embedding": False,
+        "enabled": True,
+        "priority": 1,
+        "fallback_model": "qwen2.5:0.5b",
+        "temperature": 0.1,
+        "timeout": 30.0,
+        "vram_estimate_mb": 600,
+        "gpu_suitability": "ideal",
+        "description": "Lightweight intent classification / simple extraction (522MB) ✅ keep warm"
     },
-    "planner": {
+
+    # ─── General Chat / Industrial Q&A ────────────────────
+    "qwen2.5:1.5b": {
+        "name": "qwen2.5:1.5b",
         "provider": "ollama",
-        "model": "llama3.2:1b",
-        "fallbacks": ["qwen2.5:1.5b", "qwen2.5:0.5b"],
-        "capabilities": ["planning", "reasoning", "task_decomposition"],
-        "description": "Step-by-step industrial execution plan generation",
-        "tool_calling": True,
+        "endpoint": "http://127.0.0.1:11434",
+        "type": "llm",
+        "role": ["general", "chat", "spreadsheet"],
+        "capabilities": ["general_chat", "industrial_qa", "explanations", "concept_analysis"],
+        "task_types": ["GENERAL_CHAT", "CONCEPT_EXPLANATION", "GENERAL_INDUSTRIAL_QA"],
+        "modality": "text",
+        "context_length": 32768,
+        "hardware": ["gpu", "cpu"],
+        "vision": False,
+        "tools": True,
+        "embedding": False,
+        "enabled": True,
+        "priority": 1,
+        "fallback_model": "qwen3:1.7b",
+        "temperature": 0.7,
+        "timeout": 60.0,
+        "vram_estimate_mb": 1000,
+        "gpu_suitability": "ideal",
+        "description": "Normal general chat and industrial Q&A (986MB) ✅ keep warm"
     },
-    "document": {
+
+    # ─── Lightweight Reasoning / Fallback Reasoning ────────
+    "qwen3:1.7b": {
+        "name": "qwen3:1.7b",
         "provider": "ollama",
-        "model": "gemma3:1b",
-        "fallbacks": ["qwen2.5:1.5b", "qwen2.5:0.5b"],
-        "capabilities": ["document_analysis", "structured_extraction", "summarization"],
-        "description": "Deep document comprehension, table and text extraction",
-        "tool_calling": True,
+        "endpoint": "http://127.0.0.1:11434",
+        "type": "llm",
+        "role": ["lightweight_reasoning", "fallback_reasoning", "planner"],
+        "capabilities": ["lightweight_reasoning", "fallback_reasoning", "intermediate_synthesis"],
+        "task_types": ["LIGHTWEIGHT_REASONING", "FALLBACK_REASONING"],
+        "modality": "text",
+        "context_length": 32768,
+        "hardware": ["gpu", "cpu"],
+        "vision": False,
+        "tools": True,
+        "embedding": False,
+        "enabled": True,
+        "priority": 2,
+        "fallback_model": "qwen2.5:1.5b",
+        "temperature": 0.3,
+        "timeout": 60.0,
+        "vram_estimate_mb": 1400,
+        "gpu_suitability": "good",
+        "description": "Lightweight reasoning and fallback reasoning (1.4GB) ✅"
     },
-    "coding": {
+
+    # ─── Advanced Agentic Planning, Research & Reasoning ───
+    "qwen3:4b": {
+        "name": "qwen3:4b",
         "provider": "ollama",
-        "model": "qwen2.5-coder:1.5b",
-        "fallbacks": ["qwen2.5-coder:0.5b", "qwen2.5:1.5b"],
-        "capabilities": ["coding", "debugging", "automation", "python", "scripting"],
-        "description": "Code generation, sandbox automation, script execution",
-        "tool_calling": True,
+        "endpoint": "http://127.0.0.1:11434",
+        "type": "llm",
+        "role": [
+            "reasoning", "planner", "document", "document_qa", "document_summary",
+            "reporting", "maintenance", "safety", "compliance", "risk", "research"
+        ],
+        "capabilities": [
+            "planning", "task_decomposition", "advanced_planning", "research", "document_reasoning", "reporting",
+            "maintenance_analysis", "safety_analysis", "compliance_analysis", "risk_analysis"
+        ],
+        "task_types": [
+            "DOCUMENT_QA", "DOCUMENT_SUMMARY", "MULTI_DOCUMENT_RESEARCH",
+            "MAINTENANCE_ANALYSIS", "SAFETY_ANALYSIS", "COMPLIANCE_ANALYSIS",
+            "RISK_ANALYSIS", "REPORTING", "PDF_PLANNING"
+        ],
+        "modality": "text",
+        "context_length": 32768,
+        "hardware": ["gpu", "cpu"],
+        "vision": False,
+        "tools": True,
+        "embedding": False,
+        "enabled": True,
+        "priority": 1,
+        "fallback_model": "qwen3:1.7b",
+        "temperature": 0.2,
+        "timeout": 180.0,
+        "vram_estimate_mb": 2600,
+        "gpu_suitability": "managed",
+        "description": "Advanced agentic planning, research, document reasoning, reporting (2.5GB) ✅"
     },
-    "risk": {
+
+    # ─── Coding Specialist ─────────────────────────────────
+    "qwen2.5-coder:1.5b": {
+        "name": "qwen2.5-coder:1.5b",
         "provider": "ollama",
-        "model": "qwen2.5:1.5b",
-        "fallbacks": ["qwen2.5:0.5b"],
-        "capabilities": ["risk_analysis", "hazard_identification", "mitigation_planning"],
-        "description": "Industrial hazard, severity matrix and risk quantification",
-        "tool_calling": True,
+        "endpoint": "http://127.0.0.1:11434",
+        "type": "llm",
+        "role": ["coding", "tool_execution"],
+        "capabilities": ["coding", "python", "javascript", "typescript", "debugging", "code_generation"],
+        "task_types": ["CODE_GENERATION", "CODE_EXECUTION", "DEBUGGING"],
+        "modality": "text",
+        "context_length": 32768,
+        "hardware": ["gpu", "cpu"],
+        "vision": False,
+        "tools": True,
+        "embedding": False,
+        "enabled": True,
+        "priority": 1,
+        "fallback_model": "qwen2.5-coder:3b",
+        "temperature": 0.1,
+        "timeout": 90.0,
+        "vram_estimate_mb": 1100,
+        "gpu_suitability": "ideal",
+        "description": "Specialist coding model for scripting and code generation (986MB) ✅"
     },
-    "compliance": {
+
+    # ─── Complex Coding Fallback / Benchmark ───────────────
+    "qwen2.5-coder:3b": {
+        "name": "qwen2.5-coder:3b",
         "provider": "ollama",
-        "model": "qwen2.5:1.5b",
-        "fallbacks": ["qwen2.5:0.5b"],
-        "capabilities": ["compliance", "policy_analysis", "sop_verification", "audit"],
-        "description": "ISO/OSHA standards adherence and regulatory verification",
-        "tool_calling": True,
+        "endpoint": "http://127.0.0.1:11434",
+        "type": "llm",
+        "role": ["coding_heavy", "complex_code", "tool_execution_heavy"],
+        "capabilities": ["coding", "complex_coding", "refactoring", "multi_file_coding", "benchmark"],
+        "task_types": ["COMPLEX_CODE", "CODE_BENCHMARK", "HEAVY_REFACTORING"],
+        "modality": "text",
+        "context_length": 32768,
+        "hardware": ["gpu"],
+        "vision": False,
+        "tools": True,
+        "embedding": False,
+        "enabled": True,
+        "priority": 2,
+        "fallback_model": "qwen2.5-coder:1.5b",
+        "temperature": 0.1,
+        "timeout": 120.0,
+        "vram_estimate_mb": 2100,
+        "gpu_suitability": "managed",
+        "description": "Complex coding fallback and heavy software engineering (1.9GB) ✅"
     },
-    "safety": {
+
+    # ─── Primary Vision Model ──────────────────────────────
+    "qwen3-vl:4b": {
+        "name": "qwen3-vl:4b",
         "provider": "ollama",
-        "model": "qwen2.5:1.5b",
-        "fallbacks": ["qwen2.5:0.5b"],
-        "capabilities": ["safety_analysis", "osha_guidelines", "hazard_mitigation"],
-        "description": "Industrial plant safety inspection and protocol checking",
-        "tool_calling": True,
+        "endpoint": "http://127.0.0.1:11434",
+        "type": "vlm",
+        "role": ["vision", "image_understanding"],
+        "capabilities": ["image_understanding", "component_identification", "visual_inspection", "diagrams"],
+        "task_types": ["IMAGE_UNDERSTANDING", "VISUAL_INSPECTION", "COMPONENT_IDENTIFICATION"],
+        "modality": "multimodal",
+        "context_length": 32768,
+        "hardware": ["gpu", "cpu"],
+        "vision": True,
+        "tools": False,
+        "embedding": False,
+        "enabled": True,
+        "priority": 1,
+        "fallback_model": "qwen2.5vl:3b",
+        "temperature": 0.2,
+        "timeout": 120.0,
+        "vram_estimate_mb": 3300,
+        "gpu_suitability": "managed",
+        "description": "Primary multimodal vision model for industrial inspection and diagram understanding (3.3GB) ✅"
     },
-    "maintenance": {
+
+    # ─── Vision Fallback Model ─────────────────────────────
+    "qwen2.5vl:3b": {
+        "name": "qwen2.5vl:3b",
         "provider": "ollama",
-        "model": "qwen2.5:1.5b",
-        "fallbacks": ["qwen2.5:0.5b"],
-        "capabilities": ["maintenance_analysis", "equipment_diagnosis", "telemetry_analysis"],
-        "description": "Equipment health, vibration/thermal telemetry diagnosis",
-        "tool_calling": True,
+        "endpoint": "http://127.0.0.1:11434",
+        "type": "vlm",
+        "role": ["vision_fallback", "vision"],
+        "capabilities": ["image_understanding", "visual_inspection", "vision_fallback"],
+        "task_types": ["VISION_FALLBACK", "IMAGE_UNDERSTANDING_FALLBACK"],
+        "modality": "multimodal",
+        "context_length": 32768,
+        "hardware": ["gpu", "cpu"],
+        "vision": True,
+        "tools": False,
+        "embedding": False,
+        "enabled": True,
+        "priority": 2,
+        "fallback_model": None,
+        "temperature": 0.2,
+        "timeout": 90.0,
+        "vram_estimate_mb": 3200,
+        "gpu_suitability": "managed",
+        "description": "Vision fallback model — reliable fast multimodal inference (3.2GB) ✅"
     },
-    "reporting": {
+
+    # ─── Embeddings Only ───────────────────────────────────
+    "nomic-embed-text": {
+        "name": "nomic-embed-text",
         "provider": "ollama",
-        "model": "qwen2.5:1.5b",
-        "fallbacks": ["qwen2.5:0.5b"],
-        "capabilities": ["report_generation", "executive_summary", "structured_synthesis"],
-        "description": "Technical report synthesis, formatting and documentation",
-        "tool_calling": True,
+        "endpoint": "http://127.0.0.1:11434",
+        "type": "embedding",
+        "role": ["embedding", "rag"],
+        "capabilities": ["embeddings", "vector_indexing", "semantic_search"],
+        "task_types": ["EMBEDDING", "SEMANTIC_SEARCH", "RAG_INDEXING"],
+        "modality": "embedding",
+        "context_length": 8192,
+        "hardware": ["gpu", "cpu"],
+        "vision": False,
+        "tools": False,
+        "embedding": True,
+        "enabled": True,
+        "priority": 1,
+        "fallback_model": "nomic-embed-text:latest",
+        "temperature": 0.0,
+        "timeout": 60.0,
+        "vram_estimate_mb": 300,
+        "gpu_suitability": "ideal",
+        "description": "768-dim embeddings for Qdrant vector retrieval and document RAG (274MB) ✅ keep warm"
     },
-    "critic": {
+    "nomic-embed-text:latest": {
+        "name": "nomic-embed-text:latest",
         "provider": "ollama",
-        "model": "smollm2:1.7b",
-        "fallbacks": ["qwen2.5:0.5b", "qwen2.5:1.5b"],
-        "capabilities": ["verification", "critique", "hallucination_check"],
-        "description": "Factual verification, evidence cross-checking and critique",
-        "tool_calling": False,
-    },
-    "vision": {
-        "provider": "ollama",
-        "model": "moondream",
-        "fallbacks": ["moondream:latest", "qwen2.5vl:3b"],
-        "capabilities": ["image_understanding", "visual_inspection"],
-        "description": "Visual scene analysis and component inspection",
-        "tool_calling": False,
-    },
-    "embedding": {
-        "provider": "ollama",
-        "model": "nomic-embed-text",
-        "fallbacks": ["nomic-embed-text:latest"],
-        "capabilities": ["embedding", "semantic_search", "rag"],
-        "description": "High-density 768-dimensional local text embeddings",
-        "tool_calling": False,
+        "endpoint": "http://127.0.0.1:11434",
+        "type": "embedding",
+        "role": ["embedding", "rag"],
+        "capabilities": ["embeddings", "vector_indexing", "semantic_search"],
+        "task_types": ["EMBEDDING", "SEMANTIC_SEARCH", "RAG_INDEXING"],
+        "modality": "embedding",
+        "context_length": 8192,
+        "hardware": ["gpu", "cpu"],
+        "vision": False,
+        "tools": False,
+        "embedding": True,
+        "enabled": True,
+        "priority": 1,
+        "fallback_model": "nomic-embed-text",
+        "temperature": 0.0,
+        "timeout": 60.0,
+        "vram_estimate_mb": 300,
+        "gpu_suitability": "ideal",
+        "description": "768-dim text embeddings for RAG and vector memory (274MB) ✅ keep warm"
     },
 }
 
-
-# ============================================================
-# AGENT -> SPECIALIST ROLE MAPPING
-# ============================================================
-
-AGENT_ROLE_MAP: Dict[str, str] = {
-    # General
-    "general": "general",
-    "general_assistant": "general",
-    "general_chat": "general",
-    "chat": "general",
-
-    # Router & Planner
-    "router": "router",
-    "router_agent": "router",
-    "planner": "planner",
-    "planner_agent": "planner",
-
-    # Specialists
-    "document": "document",
-    "document_agent": "document",
-    "document_crud": "document",
-    "document_generation": "document",
-    "document_generation_agent": "document",
-    "document_specialist": "document",
-    "coding": "coding",
-    "coding_agent": "coding",
-    "code_agent": "coding",
-    "risk": "risk",
-    "risk_agent": "risk",
-    "risk_analysis": "risk",
-    "compliance": "compliance",
-    "compliance_agent": "compliance",
-    "safety": "safety",
-    "safety_agent": "safety",
-    "maintenance": "maintenance",
-    "maintenance_agent": "maintenance",
-    "reporting": "reporting",
-    "reporting_agent": "reporting",
-    "critic": "critic",
-    "critic_agent": "critic",
-    "verifier": "critic",
-    "verifier_agent": "critic",
-
-    # Vision & Multimodal
-    "vision": "vision",
-    "vision_agent": "vision",
-    "ocr": "document",
-    "ocr_agent": "document",
-
-    # Knowledge & RAG
-    "knowledge": "embedding",
-    "knowledge_agent": "embedding",
-    "rag": "embedding",
-    "memory": "embedding",
-    "memory_agent": "embedding",
-
-    # Filesystem & Automation
-    "filesystem": "coding",
-    "filesystem_agent": "coding",
-    "spreadsheet": "reporting",
-    "spreadsheet_agent": "reporting",
-    "ppt": "reporting",
-    "ppt_agent": "reporting",
-}
-
-
-# ============================================================
-# MODEL REGISTRY CLASS
-# ============================================================
 
 class ModelRegistry:
-    """Centralized SLM Model Registry with dynamic fallback resolution."""
+    """Centralized SLM Model Registry supporting dual hardware profiles."""
 
     def __init__(self) -> None:
-        self._registry: Dict[str, Dict[str, Any]] = deepcopy(MODEL_REGISTRY)
-        self._agent_roles: Dict[str, str] = deepcopy(AGENT_ROLE_MAP)
+        self._models: Dict[str, ModelMetadata] = {
+            k: ModelMetadata(**v) for k, v in ALL_MODELS.items()
+        }
         self._installed_models: List[str] = []
         self._resolved_cache: Dict[str, str] = {}
 
     def _normalize_name(self, name: str) -> str:
         return (name or "").strip().lower()
+
+    def detect_installed_models_sync(self) -> List[str]:
+        """Synchronously query local Ollama API for installed models."""
+        if self._installed_models:
+            return self._installed_models
+        try:
+            import urllib.request, json
+            base_url = (settings.OLLAMA_BASE_URL or "http://127.0.0.1:11434").replace("localhost", "127.0.0.1").rstrip("/")
+            req = urllib.request.Request(f"{base_url}/api/tags", headers={"User-Agent": "SovereignAI/1.0"})
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                data = json.loads(resp.read().decode())
+                models = [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+                if models:
+                    self.update_installed_models(models)
+        except Exception as e:
+            logger.debug(f"[MODEL_REGISTRY] Sync probe error: {e}")
+        return self._installed_models
 
     def update_installed_models(self, models: List[str]) -> None:
         """Update list of currently installed models from Ollama."""
@@ -242,191 +379,304 @@ class ModelRegistry:
             return self._installed_models
         except Exception as e:
             logger.warning(f"[MODEL_REGISTRY] Failed to detect installed models: {e}")
-            return self._installed_models
+            return self.detect_installed_models_sync()
 
     def get_installed_models(self) -> List[str]:
         """Return list of currently cached installed models."""
+        if not self._installed_models:
+            self.detect_installed_models_sync()
         return list(self._installed_models)
 
     def is_installed(self, model_name: str) -> bool:
-        """Check if a specific model or base model is installed in Ollama."""
+        """Check if a specific model is installed in local Ollama."""
         if not self._installed_models:
-            return True  # If not yet probed, assume available until probed
+            self.detect_installed_models_sync()
 
+        if not self._installed_models:
+            return False
 
         norm = self._normalize_name(model_name)
         if norm in self._installed_models:
             return True
 
-        # Check with or without :latest
         if ":latest" in norm:
             base = norm.replace(":latest", "")
-            if base in self._installed_models:
+            if base in self._installed_models or f"{base}:latest" in self._installed_models:
                 return True
         else:
             if f"{norm}:latest" in self._installed_models:
                 return True
 
-        # Check prefix match if base matches
-        req_base = norm.split(":")[0]
-        for inst in self._installed_models:
-            if inst == norm or inst.split(":")[0] == req_base:
-                return True
-
         return False
 
-    def get_role_for_agent(self, agent_name: str) -> str:
-        """Map an agent slug to a specialist model role."""
-        norm = self._normalize_name(agent_name)
-        return self._agent_roles.get(norm, "general")
-
-    def resolve_model(self, role: str) -> str:
-        """
-        Resolve the effective model for a specialist role with graceful fallback.
-        Never crashes if the primary model is uninstalled.
-        """
-        role_key = self._normalize_name(role)
-        if role_key in self._resolved_cache:
-            return self._resolved_cache[role_key]
-
-        config = self._registry.get(role_key)
-        if not config:
-            role_key = self.get_role_for_agent(role_key)
-            config = self._registry.get(role_key, self._registry["general"])
-
-        primary_model = config["model"]
-        candidates = [primary_model] + list(config.get("fallbacks", []))
-
-        # Check candidates in order
-        chosen_model = None
-        for candidate in candidates:
-            if self.is_installed(candidate):
-                chosen_model = candidate
-                break
-
-        # Fallback to general model if none of the role candidates are installed
-        if not chosen_model:
-            logger.warning(
-                f"[MODEL_REGISTRY] Primary '{primary_model}' and fallbacks {config.get('fallbacks', [])} "
-                f"for role '{role_key}' are not installed. Falling back to general model."
-            )
-            for gen_candidate in [self._registry["general"]["model"]] + self._registry["general"].get("fallbacks", []):
-                if self.is_installed(gen_candidate):
-                    chosen_model = gen_candidate
-                    break
-            if not chosen_model:
-                chosen_model = primary_model  # Default to declared primary
-
-        self._resolved_cache[role_key] = chosen_model
-        return chosen_model
-
-    def get_model(self, task_type_or_role: str = "general") -> str:
-        """Alias for resolving model by role or agent."""
-        return self.resolve_model(task_type_or_role)
-
-    def get_agent_model(
-        self,
-        task_type: str = "general",
-        requested_model: Optional[str] = None
-    ) -> str:
-        """Get model for agent, respecting explicit requested model if provided."""
-        if requested_model and requested_model.strip().lower() != "auto":
-            return requested_model.strip()
-
-        role = self.get_role_for_agent(task_type)
-        return self.resolve_model(role)
-
-    def get_model_config(self, role_or_model: str) -> Optional[Dict[str, Any]]:
-        """Retrieve model configuration for role or model name."""
-        norm = self._normalize_name(role_or_model)
-        if norm in self._registry:
-            cfg = deepcopy(self._registry[norm])
-            cfg["effective_model"] = self.resolve_model(norm)
-            cfg["installed"] = self.is_installed(cfg["model"])
-            return cfg
-
-        for role, cfg in self._registry.items():
-            if self._normalize_name(cfg.get("model", "")) == norm:
-                res = deepcopy(cfg)
-                res["effective_model"] = self.resolve_model(role)
-                res["installed"] = self.is_installed(norm)
-                return res
-
+    def get_model_metadata(self, model_name: str) -> Optional[ModelMetadata]:
+        norm = self._normalize_name(model_name)
+        for key, meta in self._models.items():
+            if key == norm or f"{key}:latest" == norm or norm.startswith(key):
+                return meta
         return None
 
-    def get_model_capabilities(self, role: str) -> List[str]:
-        """Return capabilities for a specialist role."""
-        cfg = self.get_model_config(role)
-        return list(cfg.get("capabilities", [])) if cfg else []
+    def list_models(self, hardware_profile: Optional[str] = None) -> List[ModelMetadata]:
+        """List models, optionally filtered by hardware profile (gpu/cpu)."""
+        hw = (hardware_profile or get_hardware_profile()).lower()
+        is_gpu = "gpu" in hw
 
-    def has_capability(self, role: str, capability: str) -> bool:
-        """Check whether role or model has a specific capability."""
-        caps = [c.lower() for c in self.get_model_capabilities(role)]
-        return self._normalize_name(capability) in caps
+        results = []
+        for m in self._models.values():
+            if is_gpu or "cpu" in m.hardware:
+                results.append(m)
+        return results
 
-    def supports_tools(self, model_name_or_role: str) -> bool:
-        """Check if model supports structured tool execution."""
-        cfg = self.get_model_config(model_name_or_role)
-        if cfg:
-            return bool(cfg.get("tool_calling", False))
-        return False
+    def get_role_for_agent(self, agent_name: str) -> str:
+        """Map specialist agent name or task type to a core model role."""
+        name = (agent_name or "").lower().strip()
+        mapping = {
+            # Coding agents
+            "code_agent": "coding",
+            "coding": "coding",
+            "coder": "coding",
+            "code_generation": "coding",
+            "code_execution": "coding",
+            "filesystem_agent": "coding",
+            "complex_coding": "coding_heavy",
+            "complex_code": "coding_heavy",
+
+            # Vision agents
+            "vision_agent": "vision",
+            "vision": "vision",
+            "image_analysis": "vision",
+            "image_understanding": "vision",
+            "ocr": "ocr",
+            "ocr_agent": "ocr",
+
+            # Classifier / router
+            "classifier": "classifier",
+            "router": "router",
+
+            # Embedding
+            "embedding": "embedding",
+            "rag": "embedding",
+
+            # Planner
+            "planner": "planner",
+
+            # Industrial specialist agents → reasoning (qwen3:1.7b)
+            "document_agent": "reasoning",
+            "document": "reasoning",
+            "document_qa": "reasoning",
+            "document_summary": "reasoning",
+            "research_agent": "reasoning",
+            "research": "reasoning",
+            "multi_document_research": "reasoning",
+            "reporting_agent": "reasoning",
+            "reporting": "reasoning",
+            "risk_agent": "reasoning",
+            "risk": "reasoning",
+            "compliance_agent": "reasoning",
+            "compliance": "reasoning",
+            "maintenance_agent": "reasoning",
+            "maintenance": "reasoning",
+            "safety_agent": "reasoning",
+            "safety": "reasoning",
+            "knowledge_agent": "reasoning",
+            "reasoning": "reasoning",
+
+            # Spreadsheet / Excel -> spreadsheet (uses qwen2.5:1.5b for conversation/planning + openpyxl tool, NEVER coder!)
+            "spreadsheet_agent": "spreadsheet",
+            "spreadsheet": "spreadsheet",
+            "excel": "spreadsheet",
+            "excel_generation": "spreadsheet",
+            "data_analysis": "spreadsheet",
+
+            # Simple / greeting / fallback
+            "simple": "fallback",
+            "greeting": "fallback",
+            "fallback": "fallback",
+
+            # General assistant / chat
+            "general_assistant": "general",
+            "general": "general",
+            "chat": "general",
+        }
+        return mapping.get(name, "general")
+
+    def get_default_model_for_role(self, role: str, hardware_profile: Optional[str] = None) -> str:
+        """Return the default model tag for a given role based on hardware profile."""
+        hw = (hardware_profile or get_hardware_profile()).upper()
+        is_gpu = "GPU" in hw or hw == PROFILE_GPU_RTX2050
+
+        r = (role or "").lower().strip()
+        if hasattr(self, "_role_overrides") and r in self._role_overrides:
+            return self._role_overrides[r]
+
+        if is_gpu:
+            if r in ["classifier", "router"]:
+                return getattr(settings, "GPU_CLASSIFIER_MODEL", "qwen3:0.6b")
+            elif r in ["planner"]:
+                return getattr(settings, "GPU_PLANNER_MODEL", "qwen3:1.7b")
+            elif r in ["reasoning", "document", "document_qa", "document_summary", "reporting", "maintenance", "safety", "compliance", "risk", "research"]:
+                return getattr(settings, "GPU_REASONING_MODEL", "qwen3:1.7b")
+            elif r in ["coding", "tool_execution"]:
+                return getattr(settings, "GPU_CODER_MODEL", "qwen2.5-coder:1.5b")
+            elif r in ["coding_heavy", "complex_code"]:
+                return getattr(settings, "GPU_CODER_HEAVY_MODEL", "qwen2.5-coder:3b")
+            elif r in ["vision", "image_analysis", "image_understanding"]:
+                return getattr(settings, "GPU_VISION_MODEL", "qwen2.5vl:3b")
+            elif r in ["vision_fallback"]:
+                return getattr(settings, "GPU_VISION_FALLBACK", "qwen2.5vl:3b")
+            elif r in ["embedding", "rag"]:
+                return getattr(settings, "EMBEDDING_MODEL", "nomic-embed-text")
+            elif r in ["fallback", "simple", "greeting"]:
+                return getattr(settings, "GPU_FALLBACK_MODEL", "qwen2.5:0.5b")
+            elif r in ["spreadsheet"]:
+                return getattr(settings, "GPU_MAIN_MODEL", "qwen2.5:1.5b")
+            else:  # general
+                return getattr(settings, "GPU_MAIN_MODEL", "qwen2.5:1.5b")
+        else:
+            if r in ["classifier", "router"]:
+                return getattr(settings, "CPU_CLASSIFIER_MODEL", "qwen2.5:0.5b")
+            elif r in ["planner", "reasoning"]:
+                return "qwen3:1.7b"
+            elif r in ["coding", "tool_execution"]:
+                return getattr(settings, "CPU_CODER_MODEL", "qwen2.5-coder:1.5b")
+            elif r in ["vision", "image_analysis"]:
+                return getattr(settings, "CPU_VISION_MODEL", "qwen2.5vl:3b")
+            elif r in ["embedding", "rag"]:
+                return getattr(settings, "EMBEDDING_MODEL", "nomic-embed-text")
+            elif r in ["fallback", "simple", "greeting"]:
+                return getattr(settings, "CPU_CLASSIFIER_MODEL", "qwen2.5:0.5b")
+            else:
+                return getattr(settings, "CPU_MAIN_MODEL", "qwen2.5:1.5b")
 
     def set_role_model(self, role: str, model_name: str) -> None:
-        """Administrator configuration: override model assignment for a role."""
-        role_key = self._normalize_name(role)
-        if role_key in self._registry:
-            self._registry[role_key]["model"] = model_name.strip()
-            self._resolved_cache.pop(role_key, None)
-            logger.info(f"[MODEL_REGISTRY] Overrode role '{role_key}' with model '{model_name}'")
+        """Admin or runtime override of model assigned to a role."""
+        if not hasattr(self, "_role_overrides"):
+            self._role_overrides = {}
+        self._role_overrides[role.lower().strip()] = model_name
+        self._resolved_cache.clear()
+        logger.info(f"[MODEL_REGISTRY] Overrode role '{role}' -> '{model_name}'")
 
-    def list_models(self) -> Dict[str, Any]:
-        """Return all specialist roles with availability and effective model."""
-        res = {}
-        for role, cfg in self._registry.items():
-            effective = self.resolve_model(role)
-            res[role] = {
-                "configured_model": cfg["model"],
-                "effective_model": effective,
-                "fallbacks": cfg.get("fallbacks", []),
-                "installed": self.is_installed(cfg["model"]),
-                "effective_installed": self.is_installed(effective),
-                "capabilities": cfg.get("capabilities", []),
-                "tool_calling": cfg.get("tool_calling", False),
-                "description": cfg.get("description", "")
-            }
-        return res
+    def resolve_model(self, role_or_model: str, hardware_profile: Optional[str] = None) -> str:
+        """
+        Resolve a role name (e.g. 'coding', 'general', 'vision') or a model tag
+        to an actually installed model in local Ollama via fallback chain.
+        """
+        if not role_or_model:
+            role_or_model = "general"
 
-    def list_agents(self) -> Dict[str, Any]:
-        """Return agent-to-role mappings."""
-        res = {}
-        for agent, role in self._agent_roles.items():
-            res[agent] = {
-                "role": role,
-                "model": self.resolve_model(role),
-                "capabilities": self.get_model_capabilities(role)
-            }
-        return res
+        cache_key = f"{role_or_model}:{hardware_profile}"
+        if cache_key in self._resolved_cache:
+            return self._resolved_cache[cache_key]
 
-    def get_route_info(
-        self,
-        task_type: str = "general",
-        requested_model: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Provide routing metadata for request tracking."""
-        role = self.get_role_for_agent(task_type)
-        model = self.get_agent_model(task_type=task_type, requested_model=requested_model)
-        cfg = self.get_model_config(role) or self._registry["general"]
-
-        return {
-            "task_type": task_type,
-            "agent": task_type,
-            "role": role,
-            "model": model,
-            "provider": cfg.get("provider", "ollama"),
-            "tool_calling": self.supports_tools(role),
-            "capabilities": cfg.get("capabilities", [])
+        norm = self._normalize_name(role_or_model)
+        known_roles = {
+            "general", "planner", "reasoning", "coding", "tool_execution",
+            "vision", "image_analysis", "ocr", "classifier", "router",
+            "embedding", "rag", "document", "reporting", "safety", "maintenance",
+            "compliance", "risk", "critic", "code_agent", "document_agent",
+            "vision_agent", "risk_agent", "compliance_agent", "safety_agent",
+            "maintenance_agent", "reporting_agent", "filesystem_agent",
+            "fallback", "simple", "greeting", "general_assistant",
+            "knowledge_agent", "spreadsheet_agent", "ppt_agent"
         }
 
+        if norm in known_roles:
+            target_role = self.get_role_for_agent(norm)
+            candidate = self.get_default_model_for_role(target_role, hardware_profile)
+        else:
+            candidate = role_or_model
 
-# Global singleton instance
+        resolved = self.resolve_fallback_chain(candidate)
+        self._resolved_cache[cache_key] = resolved
+        return resolved
+
+    def get_agent_model(self, agent_name: str = "general", requested_model: Optional[str] = None) -> str:
+        """Convenience method for agent initialization."""
+        if requested_model and requested_model != "auto":
+            return self.resolve_model(requested_model)
+        role = self.get_role_for_agent(agent_name)
+        return self.resolve_model(role)
+
+    def get_model(self, role_or_agent: str = "general") -> "ModelString":
+        """Convenience alias for resolve_model returning rich string with metadata properties."""
+        resolved = self.resolve_model(role_or_agent)
+        meta = self.get_model_metadata(role_or_agent) or self.get_model_metadata(resolved)
+        return ModelString(resolved, meta)
+
+    def estimate_vram_mb(self, model_names: List[str]) -> int:
+        """Estimate total VRAM needed for a set of models."""
+        total = 0
+        for name in model_names:
+            meta = self.get_model_metadata(name)
+            total += meta.vram_estimate_mb if meta else 2000
+        return total
+
+    def get_fallback(self, model_name: str) -> Optional[str]:
+        """Get the configured fallback model name for a given model."""
+        meta = self.get_model_metadata(model_name)
+        if meta and meta.fallback_model:
+            return meta.fallback_model
+        return "qwen2.5:1.5b"
+
+    def resolve_fallback_chain(self, primary_model: str) -> str:
+        """Walks fallback chain until finding a model actually installed in local Ollama."""
+        if self.is_installed(primary_model):
+            return primary_model
+
+        curr = primary_model
+        visited = set()
+        while curr and curr not in visited:
+            visited.add(curr)
+            meta = self.get_model_metadata(curr)
+            if not meta or not meta.fallback_model:
+                break
+            fb = meta.fallback_model
+            if self.is_installed(fb):
+                logger.info(f"[MODEL_REGISTRY] Model '{primary_model}' missing -> selected fallback '{fb}'")
+                return fb
+            curr = fb
+
+        # If chain exhausted, find any installed non-embedding model
+        installed = self.get_installed_models()
+        text_models = [m for m in installed if "embed" not in m]
+        if text_models:
+            fallback = text_models[0]
+            logger.info(f"[MODEL_REGISTRY] All fallbacks exhausted for '{primary_model}' -> using '{fallback}'")
+            return fallback
+
+        return primary_model
+
+
+class ModelString(str):
+    """String subclass that preserves string compatibility while providing model metadata attributes."""
+    def __new__(cls, val: str, meta: Optional[ModelMetadata] = None):
+        obj = super().__new__(cls, val)
+        obj._meta = meta
+        return obj
+
+    @property
+    def capabilities(self) -> List[str]:
+        if getattr(self, "_meta", None):
+            return self._meta.capabilities
+        from llm.model_registry import model_registry
+        m = model_registry.get_model_metadata(str(self))
+        return m.capabilities if m else []
+
+    @property
+    def vram_estimate_mb(self) -> int:
+        if getattr(self, "_meta", None):
+            return self._meta.vram_estimate_mb
+        from llm.model_registry import model_registry
+        m = model_registry.get_model_metadata(str(self))
+        return m.vram_estimate_mb if m else 2000
+
+    @property
+    def fallback_model(self) -> Optional[str]:
+        if getattr(self, "_meta", None):
+            return self._meta.fallback_model
+        from llm.model_registry import model_registry
+        m = model_registry.get_model_metadata(str(self))
+        return m.fallback_model if m else None
+
+
 model_registry = ModelRegistry()

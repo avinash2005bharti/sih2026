@@ -205,3 +205,79 @@ class DocumentExtractTool(BaseTool):
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+
+class DocumentCreatorTool(BaseTool):
+    """Generates formatted Microsoft Word (.docx) documents with headings, paragraphs, and tables."""
+
+    name = "docx_creator"
+    description = "Generate a formatted Word document (.docx) with structured sections, headings, and tables."
+
+    async def execute(
+        self,
+        title: str,
+        sections: List[Dict[str, Any]],
+        filename: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        return await self.arun(title=title, sections=sections, filename=filename, **kwargs)
+
+    async def arun(
+        self,
+        title: str,
+        sections: List[Dict[str, Any]],
+        filename: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        try:
+            import time
+            import docx
+            from core.config import settings
+            from core.security import validate_safe_path
+
+            fname = filename or f"document_{int(time.time())}.docx"
+            if not fname.lower().endswith(".docx"):
+                fname += ".docx"
+
+            target_path = settings.ARTIFACT_DIR / fname
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            safe_path = validate_safe_path(str(target_path))
+
+            doc = docx.Document()
+            doc.add_heading(title, level=0)
+
+            for sec in sections:
+                h = sec.get("heading")
+                if h:
+                    doc.add_heading(h, level=1)
+                content = sec.get("content") or sec.get("body")
+                if content:
+                    doc.add_paragraph(content)
+                table_data = sec.get("table_data")
+                if table_data and isinstance(table_data, list) and len(table_data) > 0:
+                    num_rows = len(table_data)
+                    num_cols = len(table_data[0]) if num_rows > 0 and isinstance(table_data[0], list) else 1
+                    t = doc.add_table(rows=num_rows, cols=num_cols)
+                    t.style = 'Table Grid'
+                    for r_idx, row in enumerate(table_data):
+                        if isinstance(row, list):
+                            for c_idx, cell_val in enumerate(row):
+                                if c_idx < num_cols:
+                                    t.cell(r_idx, c_idx).text = str(cell_val)
+                        else:
+                            t.cell(r_idx, 0).text = str(row)
+
+            doc.save(str(safe_path))
+            return {
+                "status": "success",
+                "success": True,
+                "file_path": str(safe_path),
+                "filename": fname
+            }
+        except Exception as e:
+            logger.error(f"DocumentCreatorTool error: {e}")
+            return {"status": "error", "success": False, "error": str(e)}
+
+
+document_creator_tool = DocumentCreatorTool()
+

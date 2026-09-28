@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import ChatMessageItem from './ChatMessageItem';
 import { Shield } from 'lucide-react';
 import { useChat } from '../../context/ChatContext';
+import swarajLogo from '../../asset/swaraj.logo-removebg-preview.png';
 
 const ChatMessageList = ({ messages }) => {
   const bottomRef = useRef(null);
@@ -21,13 +22,13 @@ const ChatMessageList = ({ messages }) => {
       {isGenerating && (
         <div className="py-4 px-4 sm:px-6 bg-white/60 border-y border-slate-100">
           <div className="max-w-4xl mx-auto flex gap-3.5 items-start">
-            <div className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center flex-shrink-0 animate-pulse">
-              <Shield className="w-4 h-4 fill-white/20" />
+            <div className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center flex-shrink-0 animate-pulse overflow-hidden">
+              <img src={swarajLogo} alt="SWaRAJ" className="w-full h-full object-cover" />
             </div>
             <div className="flex-1">
               <div className="flex items-center gap-2 mb-1.5">
                 <span className="text-xs font-semibold text-slate-900">
-                  {selectedAgent?.name || 'Sovereign Assistant'}
+                  {selectedAgent?.name || 'SWaRAJ'}
                 </span>
                 <span className="text-[10px] font-mono text-slate-400">
                   {selectedModel?.displayName || 'Llama-3-70B'}

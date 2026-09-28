@@ -135,6 +135,19 @@ class CreateExcelTool(BaseTool):
 
                 wb.save(str(target))
 
+                # Post-Generation Verification
+                validation_wb = openpyxl.load_workbook(str(target), read_only=True)
+                sheets = validation_wb.sheetnames
+                if not sheets:
+                    validation_wb.close()
+                    return {"success": False, "error": "Workbook validation failed: no sheets present."}
+                check_ws = validation_wb[sheets[0]]
+                loaded_rows = list(check_ws.iter_rows(values_only=True))
+                validation_wb.close()
+
+                if len(loaded_rows) < 1:
+                    return {"success": False, "error": "Workbook validation failed: sheet contains 0 rows."}
+
             except ImportError:
                 return {"success": False, "error": "The 'openpyxl' library is required but not installed."}
 
@@ -143,7 +156,7 @@ class CreateExcelTool(BaseTool):
 
             size = target.stat().st_size
             rel_path = str(target.relative_to(SANDBOX_DIR)).replace("\\", "/")
-            logger.info(f"[CreateExcelTool] Generated '{file_name}' ({size} bytes) at {rel_path}")
+            logger.info(f"[CreateExcelTool] Generated and validated '{file_name}' ({size} bytes, {len(loaded_rows)} rows) at {rel_path}")
 
             # Register artifact in MongoDB if conversation_id provided
             conv_id = kwargs.get("conversation_id")
@@ -163,7 +176,8 @@ class CreateExcelTool(BaseTool):
             return {
                 "success": True,
                 "file_name": target.name,
-                "file_path": rel_path,
+                "file_path": str(target),
+                "relative_path": rel_path,
                 "size_bytes": size,
                 "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 "message": f"Excel spreadsheet '{target.name}' generated successfully ({size} bytes)."

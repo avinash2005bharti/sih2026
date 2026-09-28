@@ -43,7 +43,7 @@ class EmbeddingsService:
             return self._detected_dimension
 
         import time
-        if time.time() - self._last_offline_time < 15.0:
+        if time.time() - self._last_offline_time < 5.0:
             return getattr(settings, "QDRANT_VECTOR_SIZE", 768)
 
         sample = "benchmark probe"
@@ -52,7 +52,7 @@ class EmbeddingsService:
         for u in self._get_urls():
             for m in test_models:
                 try:
-                    async with httpx.AsyncClient(timeout=2.0) as client:
+                    async with httpx.AsyncClient(timeout=60.0) as client:
                         resp = await client.post(
                             f"{u}/api/embeddings",
                             json={"model": m, "prompt": sample}
@@ -81,7 +81,7 @@ class EmbeddingsService:
             return None
 
         import time
-        if time.time() - self._last_offline_time < 15.0:
+        if time.time() - self._last_offline_time < 5.0:
             return None
 
         clean_text = text.strip()
@@ -90,7 +90,7 @@ class EmbeddingsService:
         for u in self._get_urls():
             for m in test_models:
                 try:
-                    async with httpx.AsyncClient(timeout=3.0) as client:
+                    async with httpx.AsyncClient(timeout=60.0) as client:
                         resp = await client.post(
                             f"{u}/api/embeddings",
                             json={"model": m, "prompt": clean_text}

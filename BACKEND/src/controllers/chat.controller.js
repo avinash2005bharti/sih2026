@@ -93,10 +93,18 @@ async function getChatById(req, res) {
             .populate("agent", "name type")
             .populate("modelUsed", "name displayName");
 
+        const transformedMessages = messages.map(msg => {
+            const m = msg.toJSON();
+            if (m.metadata && m.metadata.attachment) {
+                m.attachment = m.metadata.attachment;
+            }
+            return m;
+        });
+
         return res.status(200).json({
             success: true,
             chat,
-            messages
+            messages: transformedMessages
         });
 
     } catch (error) {
@@ -148,7 +156,8 @@ async function sendMessage(req, res) {
         const userMessage = await Message.create({
             conversation: chatId,
             sender: "user",
-            content: content.trim()
+            content: content.trim(),
+            metadata: req.body.attachment ? { attachment: req.body.attachment } : undefined
         });
 
         // ==========================

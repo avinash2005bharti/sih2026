@@ -8,6 +8,8 @@ pydantic
 pydantic-settings
 python-dotenv
 httpx
+redis>=5.0.0
+aiofiles
 
 
 # ==============================

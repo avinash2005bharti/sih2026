@@ -178,9 +178,9 @@ def test_7_hardware_cpu_safeguards():
     print(f"[INFO] OCR Max Dimension: {settings.OCR_MAX_DIMENSION}")
     print(f"[INFO] Vision Model: {settings.VISION_MODEL}")
     
-    assert settings.OCR_DEVICE.lower() == "cpu" or settings.OCR_DEVICE.lower() == "auto", "OCR device must allow CPU execution"
-    assert settings.OCR_ENGINE == "paddleocr", "OCR engine must be paddleocr"
-    assert settings.VISION_MODEL == "moondream", "Vision model must be moondream"
+    assert settings.OCR_DEVICE.lower() in ["cpu", "auto"], "OCR device must allow CPU execution"
+    assert settings.OCR_ENGINE in ["paddleocr", "pytesseract", "python_ocr"], "OCR engine must be valid on-premise engine"
+    assert settings.VISION_MODEL in ["moondream", "qwen3-vl:4b", "qwen2.5vl:3b"], "Vision model must be supported on-premise vision model"
 
     # 2. Verify health route schema contains OCR + Vision separation
     from api.routes.health import router as health_router

@@ -1,0 +1,268 @@
+# ============================================================
+# Sovereign AI Workbench — Centralized Model Registry
+# SIH 26117 — Master AI Services Architecture
+#
+# Single source of truth for all local Ollama model roles.
+# Hardware: NVIDIA RTX 2050 (4GB VRAM) / CPU-Only fallback
+# ============================================================
+
+# --- Centralized Model Registry Definitions ---
+models:
+  qwen2.5:0.5b:
+    name: "qwen2.5:0.5b"
+    provider: "ollama"
+    endpoint: "http://127.0.0.1:11434"
+    capabilities: ["classification", "routing", "greetings", "trivial_response"]
+    task_types: ["SIMPLE_GREETING", "TRIVIAL_CLASSIFICATION"]
+    modality: "text"
+    context_length: 32768
+    priority: 1
+    fallback: null
+    temperature: 0.2
+    timeout: 30.0
+    vram_mb: 400
+    keep_warm: true
+    keep_alive: "-1"
+    gpu_suitability: "ideal"
+    description: "Ultra-fast classification, simple routing, fallback greetings (397MB)"
+
+  qwen3:0.6b:
+    name: "qwen3:0.6b"
+    provider: "ollama"
+    endpoint: "http://127.0.0.1:11434"
+    capabilities: ["intent_classification", "structured_json", "simple_extraction", "routing"]
+    task_types: ["INTENT_CLASSIFICATION", "ROUTING", "STRUCTURED_EXTRACTION"]
+    modality: "text"
+    context_length: 32768
+    priority: 1
+    fallback: "qwen2.5:0.5b"
+    temperature: 0.1
+    timeout: 30.0
+    vram_mb: 600
+    keep_warm: true
+    keep_alive: "-1"
+    gpu_suitability: "ideal"
+    description: "Lightweight intent classification and simple extraction (522MB)"
+
+  qwen2.5:1.5b:
+    name: "qwen2.5:1.5b"
+    provider: "ollama"
+    endpoint: "http://127.0.0.1:11434"
+    capabilities: ["general_chat", "industrial_qa", "explanations", "concept_analysis"]
+    task_types: ["GENERAL_CHAT", "CONCEPT_EXPLANATION", "GENERAL_INDUSTRIAL_QA"]
+    modality: "text"
+    context_length: 32768
+    priority: 1
+    fallback: "qwen3:1.7b"
+    temperature: 0.7
+    timeout: 60.0
+    vram_mb: 1000
+    keep_warm: true
+    keep_alive: "-1"
+    gpu_suitability: "ideal"
+    description: "Normal conversational chat and general industrial Q&A (986MB)"
+
+  qwen3:1.7b:
+    name: "qwen3:1.7b"
+    provider: "ollama"
+    endpoint: "http://127.0.0.1:11434"
+    capabilities: ["lightweight_reasoning", "fallback_reasoning", "intermediate_synthesis"]
+    task_types: ["LIGHTWEIGHT_REASONING", "FALLBACK_REASONING"]
+    modality: "text"
+    context_length: 32768
+    priority: 2
+    fallback: "qwen2.5:1.5b"
+    temperature: 0.3
+    timeout: 60.0
+    vram_mb: 1400
+    keep_warm: false
+    keep_alive: "5m"
+    gpu_suitability: "good"
+    description: "Lightweight reasoning and fallback reasoning (1.4GB)"
+
+  qwen3:4b:
+    name: "qwen3:4b"
+    provider: "ollama"
+    endpoint: "http://127.0.0.1:11434"
+    capabilities: [
+      "planning", "task_decomposition", "advanced_planning", "research", "document_reasoning", "reporting",
+      "maintenance_analysis", "safety_analysis", "compliance_analysis", "risk_analysis"
+    ]
+    task_types: [
+      "DOCUMENT_QA", "DOCUMENT_SUMMARY", "MULTI_DOCUMENT_RESEARCH",
+      "MAINTENANCE_ANALYSIS", "SAFETY_ANALYSIS", "COMPLIANCE_ANALYSIS",
+      "RISK_ANALYSIS", "REPORTING", "PDF_PLANNING"
+    ]
+    modality: "text"
+    context_length: 32768
+    priority: 1
+    fallback: "qwen3:1.7b"
+    temperature: 0.2
+    timeout: 180.0
+    vram_mb: 2600
+    keep_warm: false
+    keep_alive: "5m"
+    gpu_suitability: "managed"
+    description: "Advanced agentic planning, research, document reasoning, reporting (2.5GB)"
+
+  qwen2.5-coder:1.5b:
+    name: "qwen2.5-coder:1.5b"
+    provider: "ollama"
+    endpoint: "http://127.0.0.1:11434"
+    capabilities: ["coding", "python", "javascript", "typescript", "debugging", "code_generation"]
+    task_types: ["CODE_GENERATION", "CODE_EXECUTION", "DEBUGGING"]
+    modality: "text"
+    context_length: 32768
+    priority: 1
+    fallback: "qwen2.5-coder:3b"
+    temperature: 0.1
+    timeout: 90.0
+    vram_mb: 1100
+    keep_warm: false
+    keep_alive: "5m"
+    gpu_suitability: "ideal"
+    description: "Specialist coding model for scripting and code generation (986MB)"
+
+  qwen2.5-coder:3b:
+    name: "qwen2.5-coder:3b"
+    provider: "ollama"
+    endpoint: "http://127.0.0.1:11434"
+    capabilities: ["coding", "complex_coding", "refactoring", "multi_file_coding", "benchmark"]
+    task_types: ["COMPLEX_CODE", "CODE_BENCHMARK", "HEAVY_REFACTORING"]
+    modality: "text"
+    context_length: 32768
+    priority: 2
+    fallback: "qwen2.5-coder:1.5b"
+    temperature: 0.1
+    timeout: 120.0
+    vram_mb: 2100
+    keep_warm: false
+    keep_alive: "5m"
+    gpu_suitability: "managed"
+    description: "Complex coding fallback and heavy software engineering (1.9GB)"
+
+  qwen3-vl:4b:
+    name: "qwen3-vl:4b"
+    provider: "ollama"
+    endpoint: "http://127.0.0.1:11434"
+    capabilities: ["image_understanding", "component_identification", "visual_inspection", "diagrams"]
+    task_types: ["IMAGE_UNDERSTANDING", "VISUAL_INSPECTION", "COMPONENT_IDENTIFICATION"]
+    modality: "multimodal"
+    context_length: 32768
+    priority: 1
+    fallback: "qwen2.5vl:3b"
+    temperature: 0.2
+    timeout: 120.0
+    vram_mb: 3300
+    keep_warm: false
+    keep_alive: "5m"
+    gpu_suitability: "managed"
+    description: "Primary multimodal vision model for industrial inspection and diagram understanding (3.3GB)"
+
+  qwen2.5vl:3b:
+    name: "qwen2.5vl:3b"
+    provider: "ollama"
+    endpoint: "http://127.0.0.1:11434"
+    capabilities: ["image_understanding", "visual_inspection", "vision_fallback"]
+    task_types: ["VISION_FALLBACK", "IMAGE_UNDERSTANDING_FALLBACK"]
+    modality: "multimodal"
+    context_length: 32768
+    priority: 2
+    fallback: null
+    temperature: 0.2
+    timeout: 90.0
+    vram_mb: 3200
+    keep_warm: false
+    keep_alive: "0"
+    gpu_suitability: "managed"
+    description: "Vision fallback model (3.2GB)"
+
+  nomic-embed-text:
+    name: "nomic-embed-text"
+    provider: "ollama"
+    endpoint: "http://127.0.0.1:11434"
+    capabilities: ["embeddings", "vector_indexing", "semantic_search"]
+    task_types: ["EMBEDDING", "SEMANTIC_SEARCH", "RAG_INDEXING"]
+    modality: "embedding"
+    context_length: 8192
+    priority: 1
+    fallback: "nomic-embed-text:latest"
+    temperature: 0.0
+    timeout: 60.0
+    vram_mb: 300
+    keep_warm: true
+    keep_alive: "-1"
+    gpu_suitability: "ideal"
+    description: "768-dim embeddings for Qdrant vector retrieval and document RAG (274MB)"
+
+# --- GPU Stack (RTX 2050, 4GB VRAM) Role Mappings ---
+gpu:
+  router:
+    model: "qwen3:0.6b"
+    fallback: "qwen2.5:0.5b"
+  general:
+    model: "qwen2.5:1.5b"
+    fallback: "qwen3:1.7b"
+  reasoning:
+    model: "qwen3:4b"
+    fallback: "qwen3:1.7b"
+  planner:
+    model: "qwen3:4b"
+    fallback: "qwen3:1.7b"
+  coding:
+    model: "qwen2.5-coder:1.5b"
+    fallback: "qwen2.5-coder:3b"
+  coding_heavy:
+    model: "qwen2.5-coder:3b"
+    fallback: "qwen2.5-coder:1.5b"
+  vision:
+    model: "qwen3-vl:4b"
+    fallback: "qwen2.5vl:3b"
+  vision_fallback:
+    model: "qwen2.5vl:3b"
+    fallback: null
+  embedding:
+    model: "nomic-embed-text"
+    fallback: "nomic-embed-text:latest"
+  fallback:
+    model: "qwen2.5:0.5b"
+    fallback: null
+
+# --- CPU Stack (Fallback when no GPU available) ---
+cpu:
+  router:
+    model: "qwen2.5:0.5b"
+  general:
+    model: "qwen2.5:1.5b"
+  reasoning:
+    model: "qwen3:1.7b"
+  planner:
+    model: "qwen3:1.7b"
+  coding:
+    model: "qwen2.5-coder:1.5b"
+  vision:
+    model: "qwen2.5vl:3b"
+  embedding:
+    model: "nomic-embed-text"
+  fallback:
+    model: "qwen2.5:0.5b"
+
+# --- Always-warm models pre-loaded at startup ---
+always_warm:
+  - "qwen2.5:0.5b"
+  - "qwen2.5:1.5b"
+  - "qwen3:0.6b"
+  - "nomic-embed-text"
+
+# --- Required local models ---
+required:
+  - "qwen2.5:0.5b"
+  - "qwen3:0.6b"
+  - "qwen2.5:1.5b"
+  - "qwen3:1.7b"
+  - "qwen3:4b"
+  - "qwen2.5-coder:1.5b"
+  - "qwen2.5-coder:3b"
+  - "qwen3-vl:4b"
+  - "qwen2.5vl:3b"
+  - "nomic-embed-text"

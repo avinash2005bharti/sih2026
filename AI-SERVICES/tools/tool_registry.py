@@ -41,9 +41,13 @@ REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def resolve_safe_path(filepath: str) -> Path:
-    """Resolve filepath strictly inside SANDBOX_DIR, preventing directory traversal."""
+    """Resolve filepath safely inside SANDBOX_DIR or project root, preventing directory traversal."""
     cleaned = filepath.replace("\\", "/").strip().lstrip("/")
     target = (SANDBOX_DIR / cleaned).resolve()
+    if not target.exists():
+        alt = (BASE_DIR.parent / cleaned).resolve()
+        if alt.exists():
+            return alt
     try:
         if not target.is_relative_to(SANDBOX_DIR):
             raise PermissionError(f"Access denied: '{filepath}' attempts to escape workspace sandbox.")

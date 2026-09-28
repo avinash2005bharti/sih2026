@@ -28,6 +28,7 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "groq-sdk": "^1.6.0",
+    "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.3",
     "mistral": "^0.0.4",
     "mongodb": "^7.6.0",

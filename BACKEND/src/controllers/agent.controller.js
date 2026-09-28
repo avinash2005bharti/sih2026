@@ -202,10 +202,47 @@ async function deleteAgent(req, res) {
 }
 
 
+// GET ACTIVE AGENT (Real-Time Sync Fallback / Polling)
+const userActiveAgents = global.userActiveAgents || (global.userActiveAgents = new Map());
+
+async function getActiveAgent(req, res) {
+    try {
+        const userId = req.user?._id?.toString() || "default";
+        let current = userActiveAgents.get(userId);
+
+        if (!current) {
+            // Find default or general agent from DB
+            const general = await Agent.findOne({ isActive: true, slug: "general" })
+                || await Agent.findOne({ isActive: true }).sort({ createdAt: 1 });
+
+            current = {
+                name: general ? general.name : "General Assistant",
+                slug: general ? general.slug : "general",
+                _id: general ? general._id.toString() : null,
+                status: "idle",
+                lastUpdated: new Date().toISOString()
+            };
+            userActiveAgents.set(userId, current);
+        }
+
+        return res.status(200).json({
+            success: true,
+            agent: current
+        });
+    } catch (error) {
+        console.error("Get Active Agent Error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Failed to fetch active agent state"
+        });
+    }
+}
+
 module.exports = {
     createAgent,
     getAgents,
     getAgentById,
+    getActiveAgent,
     updateAgent,
     deleteAgent
 };

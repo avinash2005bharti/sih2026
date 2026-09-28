@@ -1,278 +1,670 @@
-"""Small, deterministic task classifier used before every chat turn.
-
-It intentionally does not require an LLM: routing must still work when the local
-model is busy or unavailable.  The result is stable, observable, and can be
-replaced by an LLM classifier later without changing the API contract.
 """
-from dataclasses import asdict, dataclass
-from typing import Dict
+Strict Structured Task Classifier for Sovereign AI Workbench.
+SIH 26117 — Deterministic First-Stage Task Classifier and Specialist Router.
+Hardware-Aware (NVIDIA RTX 2050 4GB GPU & CPU-Only Profiles).
+
+Ensures deterministic mapping:
+- USER REQUEST + ATTACHMENT ANALYSIS
+  ↓
+  TASK CLASSIFIER
+  ↓
+  AGENT SELECTION
+  ↓
+  MODEL SELECTION
+  ↓
+  TOOL SELECTION
+"""
+
+import re
+from typing import Dict, Any, Optional, List
+from enum import Enum
+from pydantic import BaseModel, Field
+
+from core.logging import logger
+from core.config import settings
+from core.hardware import get_hardware_profile, PROFILE_GPU_RTX2050
 
 
-@dataclass(frozen=True)
-class TaskClassification:
-    task_type: str
-    agent: str
-    requires_rag: bool
-    requires_memory: bool
-    requires_vision: bool
-    requires_tools: bool
-    confidence: float
+class TaskType(str, Enum):
+    GENERAL = "GENERAL"
+    REASONING = "REASONING"
+    CODING = "CODING"
+    CODE_GENERATION = "CODE_GENERATION"
+    CODE_EXECUTION = "CODE_EXECUTION"
+    DOCUMENT_COUNT = "DOCUMENT_COUNT"
+    DOCUMENT_LIST = "DOCUMENT_LIST"
+    DOCUMENT_METADATA = "DOCUMENT_METADATA"
+    DOCUMENT_ANALYSIS = "DOCUMENT_ANALYSIS"
+    DOCUMENT_QA = "DOCUMENT_QA"
+    VISION = "VISION"
+    IMAGE_IDENTIFICATION = "IMAGE_IDENTIFICATION"
+    OCR = "OCR"
+    RAG = "RAG"
+    EXCEL = "EXCEL"
+    EXCEL_GENERATION = "EXCEL_GENERATION"
+    PDF_GENERATION = "PDF_GENERATION"
+    DOCX_GENERATION = "DOCX_GENERATION"
+    FILE_OPERATION = "FILE_OPERATION"
+    TOOL_EXECUTION = "TOOL_EXECUTION"
+    MAINTENANCE = "MAINTENANCE"
+    MAINTENANCE_ANALYSIS = "MAINTENANCE_ANALYSIS"
+    SAFETY = "SAFETY"
+    SAFETY_ANALYSIS = "SAFETY_ANALYSIS"
+    COMPLIANCE = "COMPLIANCE"
+    COMPLIANCE_ANALYSIS = "COMPLIANCE_ANALYSIS"
+    RISK_ANALYSIS = "RISK_ANALYSIS"
+    REPORTING = "REPORTING"
+    REPORT_GENERATION = "REPORT_GENERATION"
+    KNOWLEDGE_QUERY = "KNOWLEDGE_QUERY"
+    SIMPLE_GREETING = "SIMPLE_GREETING"
 
-    def to_dict(self) -> Dict:
-        return asdict(self)
+
+class TaskClassification(BaseModel):
+    """Pydantic validated structured task classification result."""
+    task_type: str = Field(..., description="Classified task category")
+    agent: str = Field(default="general", description="Assigned specialist agent slug")
+    requires_vision: bool = Field(default=False, description="Whether visual processing is needed")
+    requires_rag: bool = Field(default=False, description="Whether vector search/RAG is needed")
+    requires_tools: bool = Field(default=False, description="Whether tool/sandbox execution is needed")
+    requires_memory: bool = Field(default=True, description="Whether memory context should be loaded")
+    complexity: str = Field(default="low", description="Task complexity: low, medium, high")
+    recommended_model: str = Field(default="qwen2.5:1.5b", description="Recommended model name")
+    confidence: float = Field(default=0.90, ge=0.0, le=1.0, description="Classification confidence score")
+    reasoning: Optional[str] = Field(default=None, description="Short classification rationale")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return self.model_dump()
 
 
 class TaskClassifier:
-    """Routes requests by their actual content, never by a UI default."""
+    """Intelligent deterministic task classifier with exact intent and specialist agent routing."""
 
-    def classify(self, message: str, has_images: bool = False) -> TaskClassification:
-        text = (message or "").lower()
-        def contains(*words: str) -> bool:
-            return any(word in text for word in words)
+    def __init__(self):
+        self.supported_types = [t.value for t in TaskType]
 
-        document = contains("report", "document", "manual", "sop", "policy", "procedure", "section", "pdf")
+    def _determine_recommended_model(
+        self,
+        task_type: str,
+        complexity: str,
+        requires_vision: bool,
+        hardware_profile: str
+    ) -> str:
+        """Helper to pick model recommendation matching target hardware stack."""
+        is_gpu = hardware_profile == PROFILE_GPU_RTX2050
 
-        has_file_or_doc = contains("file", "files", "document", "documents", "pdf", "report", "manual", "sop", "upload", "uploaded")
-        has_analyze = contains("analyze", "analyse", "inspect", "extract", "parse", "audit", "review")
-        has_create = contains("create", "generate", "write", "author", "make", "draft", "new", "patch", "modify", "update")
+        # Deterministic document metadata tasks - zero LLM
+        if task_type in [TaskType.DOCUMENT_COUNT.value, TaskType.DOCUMENT_LIST.value, TaskType.DOCUMENT_METADATA.value]:
+            return "deterministic_mongodb"
 
-        # High priority: Combinatorial analysis + creation based on documents/files
-        if (has_analyze or contains("based on", "derived from", "from provided", "from uploaded")) and has_create and has_file_or_doc:
-            return TaskClassification("document_generation", "document_agent", True, True, False, True, .98)
+        # Vision and OCR use Vision LLM
+        if requires_vision or task_type in [TaskType.VISION.value, TaskType.OCR.value, TaskType.IMAGE_IDENTIFICATION.value]:
+            return getattr(settings, "GPU_VISION_MODEL", "qwen3-vl:4b") if is_gpu else getattr(settings, "CPU_VISION_MODEL", "qwen2.5vl:3b")
 
-        # 1. Document/File generation, creation, and modification with instructed data
-        if contains(
-            "generate document", "generate a document", "create document", "create a document",
-            "modify document", "modify the document", "update document", "update the document",
-            "edit document", "edit the document", "change document", "modify it with instructed data",
-            "update it with instructed data", "modify with instructed data", "update with instructed data",
-            "add to document", "add section", "patch document", "new document", "author document",
-            "create pdf", "generate pdf", "make pdf", "write document", "modify pdf",
-            "create file", "create a file", "create new file", "create a new file", "write file", "write a file",
-            "generate file", "make a file"
-        ):
-            return TaskClassification("document_generation", "document_agent", True, True, False, True, .97)
+        # ONLY actual coding tasks use the code model
+        if task_type in [TaskType.CODING.value, TaskType.CODE_GENERATION.value, TaskType.CODE_EXECUTION.value]:
+            return getattr(settings, "GPU_CODER_MODEL", "qwen2.5-coder:1.5b") if is_gpu else getattr(settings, "CPU_CODER_MODEL", "qwen2.5-coder:1.5b")
 
-        # 2. Document repository inventory / metadata / CRUD / retrieval
-        if contains(
-            "list documents", "show documents", "all documents", "uploaded documents", "find documents",
-            "delete document", "get document", "read document", "index document",
-            "how many document", "how many documents", "count document", "count documents", "number of documents",
-            "what documents", "my documents", "which documents", "document section", "document sections",
-            "in document section", "in my document", "documents in my workspace", "documents in workspace",
-            "give me document", "give me the document", "give me any document", "give document",
-            "get document", "read document", "view document", "display document", "show document",
-            "show me document", "fetch document", "any document", "provide document", "open document",
-            "access document", "see document", "see the document", "what is in the document",
-            "what is in my document", "check documents", "check my documents", "check the document"
-        ):
-            return TaskClassification("document_crud", "document_agent", True, True, False, True, .96)
-        if has_images or contains("image", "photo", "p&id", "diagram", "screenshot", "ocr"):
-            return TaskClassification("vision_analysis", "document_agent", document, True, True, False, .96)
-        if contains("safety", "hazard", "unsafe", "incident", "ppe", "mitigation"):
-            return TaskClassification("safety_analysis", "safety_agent", document, True, False, False, .94)
-        if contains("compliance", "comply", "violation", "audit", "regulation", "against sop"):
-            return TaskClassification("compliance_analysis", "compliance_agent", True, True, False, False, .93)
-        if contains("maintenance", "equipment failure", "breakdown", "vibration", "telemetry", "predictive maintenance"):
-            return TaskClassification("maintenance_analysis", "maintenance_agent", document, True, False, False, .92)
-        if contains("risk", "likelihood", "impact", "risk matrix", "fmea"):
-            return TaskClassification("risk_analysis", "risk_agent", document, True, False, False, .91)
-        if contains("excel", "spreadsheet", "diagram", "flowchart", "image", "generate report"):
-            return TaskClassification("tool_execution", "reporting_agent", False, True, False, True, .93)
-        if contains("terminal", "shell", "command", "bash", "cmd", "run command", "terminal operation", "execute command"):
-            return TaskClassification("terminal_execution", "code_agent", False, True, False, True, .96)
-        if contains("file operation", "terminal operation", "file and terminal", "full files access", "analyze the files", "based on provided documents", "based on uploaded"):
-            return TaskClassification("document_generation" if has_create else "document_analysis", "document_agent", True, True, False, True, .96)
-        if contains("analyze file", "analyze document"):
-            return TaskClassification("document_generation" if has_create else "document_analysis", "document_agent", True, True, False, True, .96)
-        if contains("create folder", "create a folder", "delete file", "move file", "rename file", "list files", "write file"):
-            return TaskClassification("file_operations", "filesystem_agent", False, False, False, True, .95)
-        if contains("ppt", "powerpoint", "presentation"):
-            return TaskClassification("document_generation", "document_agent", False, False, False, True, .95)
-        if contains("object detection", "detect object", "bounding box"):
-            return TaskClassification("object_detection", "vision_agent", False, False, True, False, .95)
-        if contains("summarize", "summarise", "extract", "compare document", "inspection report"):
-            return TaskClassification("document_analysis", "document_agent", True, True, False, True, .91)
-        if contains("python", "javascript", "write code", "debug", "function", "program"):
-            return TaskClassification("coding", "code_agent", False, True, False, True, .90)
-        return TaskClassification("general_chat", "general", False, True, False, False, .75)
+        # Deep document reasoning, QA, reporting, and industrial analysis use Qwen3:4B on GPU
+        if task_type in [
+            TaskType.DOCUMENT_QA.value, TaskType.DOCUMENT_ANALYSIS.value,
+            TaskType.REPORTING.value, TaskType.REPORT_GENERATION.value,
+            TaskType.PDF_GENERATION.value, TaskType.MAINTENANCE.value,
+            TaskType.MAINTENANCE_ANALYSIS.value, TaskType.SAFETY.value,
+            TaskType.SAFETY_ANALYSIS.value, TaskType.COMPLIANCE.value,
+            TaskType.COMPLIANCE_ANALYSIS.value, TaskType.RISK_ANALYSIS.value,
+            TaskType.REASONING.value
+        ]:
+            return getattr(settings, "GPU_REASONING_MODEL", "qwen3:4b") if is_gpu else getattr(settings, "CPU_MAIN_MODEL", "qwen2.5:1.5b")
+
+        # General conversational chat uses lightweight model
+        return getattr(settings, "GPU_MAIN_MODEL", "qwen2.5:1.5b") if is_gpu else getattr(settings, "CPU_MAIN_MODEL", "qwen2.5:1.5b")
+
+    def rule_based_classify(
+        self,
+        message: str,
+        has_images: bool = False,
+        has_files: bool = False,
+        file_type: Optional[str] = None
+    ) -> TaskClassification:
+        """
+        Deterministic, attachment-aware task classification.
+        Enforces SIH 26117 Agent Responsibility Matrix:
+        General -> Coding -> Spreadsheet -> Reporting -> Document -> Vision -> OCR
+        """
+        text = (message or "").lower().strip()
+        hw_profile = get_hardware_profile()
+
+        def contains_phrase(*phrases: str) -> bool:
+            return any(phrase in text for phrase in phrases)
+
+        def contains_regex(pattern: str) -> bool:
+            return bool(re.search(pattern, text, re.IGNORECASE))
+
+        # ─── 1. Pure Greetings (Bypass agent loops) ─────────────────────────
+        _GREETING_PATTERNS = re.compile(
+            r"^(hi|hello|hey|good morning|good evening|good afternoon|good night|"
+            r"namaste|howdy|greetings|what\'?s up|sup|yo|hola|bonjour)[.!?,\s]*$",
+            re.IGNORECASE
+        )
+        if _GREETING_PATTERNS.match(text) and not has_images and not has_files:
+            fallback_model = getattr(settings, "GPU_FALLBACK_MODEL", "qwen2.5:0.5b") if "GPU" in hw_profile.upper() else "qwen2.5:0.5b"
+            return TaskClassification(
+                task_type=TaskType.SIMPLE_GREETING.value,
+                agent="general",
+                requires_vision=False,
+                requires_rag=False,
+                requires_tools=False,
+                requires_memory=False,
+                complexity="trivial",
+                recommended_model=fallback_model,
+                confidence=0.99,
+                reasoning="Pure greeting detected — bypass agent loop, use ultra-fast model."
+            )
+
+        # ─── 1.5. Deterministic Document Store Queries (ZERO LLM / ZERO RAG - Section 5) ─
+        is_doc_count = contains_phrase(
+            "how many document", "how many documents", "count document", "count documents",
+            "number of document", "number of documents", "total document", "total documents",
+            "how many files do i have", "how many files are uploaded"
+        )
+        if is_doc_count:
+            return TaskClassification(
+                task_type=TaskType.DOCUMENT_COUNT.value,
+                agent="document_tool",
+                requires_vision=False,
+                requires_rag=False,
+                requires_tools=True,
+                requires_memory=False,
+                complexity="trivial",
+                recommended_model="deterministic_mongodb",
+                confidence=1.0,
+                reasoning="Deterministic document count requested -> MongoDB metadata directly (Section 5)."
+            )
+
+        is_doc_list = contains_phrase(
+            "list document", "list documents", "list my documents", "show documents",
+            "show all documents", "what documents are uploaded", "all documents",
+            "uploaded documents", "list uploaded documents"
+        ) and not contains_phrase("in this document", "from this document", "inside document")
+        if is_doc_list:
+            return TaskClassification(
+                task_type=TaskType.DOCUMENT_LIST.value,
+                agent="document_tool",
+                requires_vision=False,
+                requires_rag=False,
+                requires_tools=True,
+                requires_memory=False,
+                complexity="trivial",
+                recommended_model="deterministic_mongodb",
+                confidence=1.0,
+                reasoning="Deterministic document list requested -> MongoDB list_documents directly (Section 5)."
+            )
+
+        # ─── 2. Document Extraction -> Spreadsheet Workflow (PRIORITY OVER PURE EXCEL) ─
+        is_doc_to_excel = contains_phrase(
+            "extract the inspection records and create an excel",
+            "extract the inspection records and create an excel sheet",
+            "extract inspection records and create an excel",
+            "extract records and create an excel",
+            "extract data and create an excel"
+        )
+        if is_doc_to_excel:
+            rec_model = getattr(settings, "GPU_REASONING_MODEL", "qwen3:4b")
+            return TaskClassification(
+                task_type=TaskType.DOCUMENT_ANALYSIS.value,
+                agent="document_agent",
+                requires_vision=False,
+                requires_rag=True,
+                requires_tools=True,
+                requires_memory=True,
+                complexity="high",
+                recommended_model=rec_model,
+                confidence=0.98,
+                reasoning="Document Extraction -> Spreadsheet workflow: Document Agent extracts records -> Spreadsheet Agent creates XLSX."
+            )
+
+        # ─── 2.5. Report Generation (PRIORITY when user asks to generate/create report) ─
+        is_report_gen = (
+            text.startswith("generate report") or text.startswith("create report") or
+            contains_phrase("generate a report", "create a report", "generate an inspection report", "create an inspection report", "generate report with", "compile report")
+        ) and not any(k in text for k in ["summarize", "what is", "how many", "explain", "extract", "find"]) and not is_doc_to_excel
+        if is_report_gen:
+            rec_model = getattr(settings, "GPU_REASONING_MODEL", "qwen3:4b")
+            return TaskClassification(
+                task_type=TaskType.REPORT_GENERATION.value,
+                agent="reporting_agent",
+                requires_vision=False,
+                requires_rag=True,
+                requires_tools=True,
+                requires_memory=True,
+                complexity="medium",
+                recommended_model=rec_model,
+                confidence=0.98,
+                reasoning="Report generation requested -> Reporting Agent + ReportLab / openpyxl tool (Section 41)."
+            )
+
+        # ─── 2.6. File / Folder System Operations (Filesystem Agent) ──────────
+        is_file_op = any(k in text for k in [
+            "create folder", "create a folder", "folder called", "mkdir", "make directory",
+            "delete file", "move file", "rename file", "list files", "save file"
+        ])
+        if is_file_op:
+            rec_model = getattr(settings, "GPU_MAIN_MODEL", "qwen2.5:1.5b")
+            return TaskClassification(
+                task_type=TaskType.FILE_OPERATION.value,
+                agent="filesystem_agent",
+                requires_vision=False,
+                requires_rag=False,
+                requires_tools=True,
+                requires_memory=False,
+                complexity="low",
+                recommended_model=rec_model,
+                confidence=0.98,
+                reasoning="Filesystem operation requested -> Filesystem Agent + local file tools."
+            )
+
+        # ─── 3. Spreadsheet / Excel File Generation (PRIORITY OVER GENERAL & CODER) ─
+        # User asks for an Excel/Spreadsheet file artifact, NOT Python code.
+        is_excel_req = contains_phrase(
+            "create an excel", "create excel", "generate excel", "generate an excel",
+            "make excel", "make an excel", "create xlsx", "generate xlsx", "make xlsx",
+            "create spreadsheet", "generate spreadsheet", "export to excel", "export as excel",
+            "save as excel", "save to excel", "excel file", "excel sheet", ".xlsx file"
+        ) or (
+            contains_phrase("excel", "xlsx", "spreadsheet") and any(k in text for k in ["create", "generate", "build", "make", "export", "file", "sheet", "dataset", "data"])
+        )
+        if is_excel_req:
+            # Model is General/Reasoning LLM that plans and invokes the openpyxl spreadsheet tool (Section 17)
+            rec_model = getattr(settings, "GPU_MAIN_MODEL", "qwen2.5:1.5b")
+            return TaskClassification(
+                task_type=TaskType.EXCEL_GENERATION.value,
+                agent="spreadsheet_agent",
+                requires_vision=False,
+                requires_rag=has_files or contains_phrase("document", "report", "extracted"),
+                requires_tools=True,
+                requires_memory=True,
+                complexity="medium",
+                recommended_model=rec_model,
+                confidence=0.99,
+                reasoning="Spreadsheet / Excel artifact generation requested -> Spreadsheet Agent + Python openpyxl tool (Section 17)."
+            )
+
+        # ─── 4. PDF Report Generation ─────────────────────────────────────────
+        # User asks for a compiled PDF deliverable, NOT textual stubs.
+        is_pdf_req = contains_phrase(
+            "create pdf", "generate pdf", "make pdf", "compile pdf", "export to pdf",
+            "export as pdf", "pdf report", "inspection report pdf", "create a pdf", "generate a pdf"
+        ) or (
+            contains_phrase("pdf") and any(k in text for k in ["create", "generate", "compile", "report", "findings", "export"])
+        )
+        if is_pdf_req:
+            rec_model = getattr(settings, "GPU_REASONING_MODEL", "qwen3:4b")
+            return TaskClassification(
+                task_type=TaskType.PDF_GENERATION.value,
+                agent="reporting_agent",
+                requires_vision=False,
+                requires_rag=True,
+                requires_tools=True,
+                requires_memory=True,
+                complexity="medium",
+                recommended_model=rec_model,
+                confidence=0.98,
+                reasoning="PDF report compilation requested -> Reporting Agent + ReportLab tool (Section 18)."
+            )
+
+        # ─── 4. Code Execution (Sandbox Tool) ──────────────────────────────────
+        is_code_exec = contains_phrase(
+            "run this code", "run this python", "execute this code", "execute python",
+            "run python", "run script", "execute the code", "test this code"
+        )
+        if is_code_exec:
+            rec_model = getattr(settings, "GPU_CODER_MODEL", "qwen2.5-coder:1.5b")
+            return TaskClassification(
+                task_type=TaskType.CODE_EXECUTION.value,
+                agent="code_agent",
+                requires_vision=False,
+                requires_rag=False,
+                requires_tools=True,
+                requires_memory=True,
+                complexity="medium",
+                recommended_model=rec_model,
+                confidence=0.98,
+                reasoning="Code execution requested -> Code Sandbox Tool."
+            )
+
+        # ─── 5. Code Generation & Debugging (Coding Agent + Coder Model) ───────
+        is_code_gen = contains_phrase(
+            "generate python code", "write python code", "write code", "generate code",
+            "write a python", "generate a python", "python script", "write a function",
+            "write a script", "debug this", "write an algorithm", "create a function",
+            "javascript code", "fastapi backend", "node script", "coding task"
+        ) or contains_regex(r"\b(write|generate|create|debug|refactor)\s+(python|javascript|typescript|c\+\+|java|sql|node|fastapi|backend|frontend)\s+code\b") or contains_regex(r"\b(write|generate)\s+code\s+for\b")
+        if is_code_gen:
+            rec_model = getattr(settings, "GPU_CODER_MODEL", "qwen2.5-coder:1.5b")
+            return TaskClassification(
+                task_type=TaskType.CODE_GENERATION.value,
+                agent="code_agent",
+                requires_vision=False,
+                requires_rag=False,
+                requires_tools=True,
+                requires_memory=True,
+                complexity="high",
+                recommended_model=rec_model,
+                confidence=0.98,
+                reasoning="Code generation / debugging requested -> Coding Agent + qwen2.5-coder:1.5b."
+            )
+
+        # ─── 6. OCR Text Extraction (RapidOCR Pipeline) ───────────────────────
+        is_ocr = contains_phrase(
+            "ocr", "extract text from image", "extract all visible text", "extract all text",
+            "read text from image", "transcribe image", "scanned document text", "extract serial number from this image"
+        )
+        if is_ocr:
+            rec_model = getattr(settings, "GPU_VISION_MODEL", "qwen3-vl:4b")
+            return TaskClassification(
+                task_type=TaskType.OCR.value,
+                agent="ocr_agent",
+                requires_vision=True,
+                requires_rag=False,
+                requires_tools=True,
+                requires_memory=True,
+                complexity="medium",
+                recommended_model=rec_model,
+                confidence=0.98,
+                reasoning="OCR text extraction requested -> RapidOCR Engine."
+            )
+
+        # ─── 7. Image Understanding / Visual Inspection (Vision Agent + Vision LLM) ──
+        # Distinguish conceptual questions like "Explain what a P&ID is" from actual image inspection!
+        is_conceptual_pid = contains_phrase("explain what a p&id", "what is a p&id", "define p&id", "what is p&id", "explain p&id")
+        is_visual_inspection = (has_images and not is_ocr) or (
+            not is_conceptual_pid and any(k in text for k in [
+                "what component is shown", "identify this component", "identify this industrial component",
+                "identify component", "identify industrial component", "identify from image",
+                "in this image", "attached image", "this photo", "inspect this picture",
+                "visual inspection", "damage on the surface", "cracks in the casing"
+            ])
+        )
+        if is_visual_inspection:
+            rec_model = getattr(settings, "GPU_VISION_MODEL", "qwen3-vl:4b")
+            return TaskClassification(
+                task_type=TaskType.VISION.value,
+                agent="vision_agent",
+                requires_vision=True,
+                requires_rag=False,
+                requires_tools=True,
+                requires_memory=True,
+                complexity="medium",
+                recommended_model=rec_model,
+                confidence=0.98,
+                reasoning="Visual scene understanding / component identification -> Vision Agent + qwen3-vl:4b."
+            )
+
+        # ─── 8. Document -> Excel / Table Extraction Workflow ─────────────────
+        is_doc_to_excel = contains_phrase(
+            "extract the inspection records and create an excel",
+            "extract the inspection records and create an excel sheet",
+            "extract inspection records and create an excel"
+        )
+        if is_doc_to_excel:
+            rec_model = getattr(settings, "GPU_MAIN_MODEL", "qwen2.5:1.5b")
+            return TaskClassification(
+                task_type=TaskType.DOCUMENT_ANALYSIS.value,
+                agent="document_agent",
+                requires_vision=False,
+                requires_rag=True,
+                requires_tools=True,
+                requires_memory=True,
+                complexity="high",
+                recommended_model=rec_model,
+                confidence=0.98,
+                reasoning="Document Extraction -> Spreadsheet workflow: Document Agent extracts records -> Spreadsheet Agent creates XLSX."
+            )
+
+        # ─── 9. Table Extraction ──────────────────────────────────────────────
+        is_table_extraction = contains_phrase(
+            "extract this table", "extract table", "extract the table", "table into structured data",
+            "parse table"
+        )
+        if is_table_extraction:
+            rec_model = getattr(settings, "GPU_MAIN_MODEL", "qwen2.5:1.5b")
+            agent = "spreadsheet_agent" if contains_phrase("excel", "sheet", "csv") else "document_agent"
+            return TaskClassification(
+                task_type=TaskType.DOCUMENT_ANALYSIS.value,
+                agent=agent,
+                requires_vision=has_images,
+                requires_rag=True,
+                requires_tools=True,
+                requires_memory=True,
+                complexity="medium",
+                recommended_model=rec_model,
+                confidence=0.97,
+                reasoning="Table extraction requested -> Document/Spreadsheet Agent."
+            )
+
+        # ─── 9. Industrial Maintenance Analysis (Maintenance Agent + Qwen3:4b) ─
+        is_maintenance = contains_phrase(
+            "maintenance analysis", "maintenance risk", "maintenance report", "maintenance inspection",
+            "vibration analysis", "bearing wear", "bearing failure", "equipment failure", "mttr",
+            "breakdown", "pump maintenance", "turbine maintenance", "maintenance tracker"
+        ) or (contains_phrase("maintenance", "vibration", "bearing") and any(k in text for k in ["analyze", "analysis", "report", "failure", "risk", "check", "inspect"]))
+        if is_maintenance:
+            rec_model = getattr(settings, "GPU_REASONING_MODEL", "qwen3:4b")
+            return TaskClassification(
+                task_type=TaskType.MAINTENANCE_ANALYSIS.value,
+                agent="maintenance_agent",
+                requires_vision=False,
+                requires_rag=True,
+                requires_tools=True,
+                requires_memory=True,
+                complexity="high",
+                recommended_model=rec_model,
+                confidence=0.98,
+                reasoning="Industrial maintenance analysis requested -> Maintenance Agent + Qwen3:4b (Section 15)."
+            )
+
+        # ─── 10. Plant Safety & LOTO Analysis (Safety Agent + Qwen3:4b) ─────────
+        is_safety = contains_phrase(
+            "safety analysis", "safety report", "safety inspection", "hazard identification",
+            "lockout tagout", "loto", "ppe compliance", "worker safety", "safety protocol",
+            "incident report", "safety violation", "unsafe condition", "safety hazard", "safety hazards"
+        ) or (contains_phrase("safety", "hazard", "hazards", "ppe", "loto", "lockout") and any(k in text for k in ["identify", "check", "analyze", "analysis", "report", "protocol", "violation", "scenario", "risk", "prevention"]))
+        if is_safety:
+            rec_model = getattr(settings, "GPU_REASONING_MODEL", "qwen3:4b")
+            return TaskClassification(
+                task_type=TaskType.SAFETY_ANALYSIS.value,
+                agent="safety_agent",
+                requires_vision=False,
+                requires_rag=True,
+                requires_tools=True,
+                requires_memory=True,
+                complexity="high",
+                recommended_model=rec_model,
+                confidence=0.98,
+                reasoning="Industrial safety analysis requested -> Safety Agent + Qwen3:4b (Section 15)."
+            )
+
+        # ─── 11. Compliance & Audit Analysis (Compliance Agent + Qwen3:4b) ──────
+        is_compliance = contains_phrase(
+            "compliance analysis", "compliance report", "regulatory compliance", "audit finding",
+            "iso compliance", "osha compliance", "against sop", "standards compliance",
+            "non-compliance", "regulatory audit", "statutory compliance"
+        ) or (contains_phrase("compliance", "audit", "standard") and any(k in text for k in ["analyze", "analysis", "report", "violation", "check"]))
+        if is_compliance:
+            rec_model = getattr(settings, "GPU_REASONING_MODEL", "qwen3:4b")
+            return TaskClassification(
+                task_type=TaskType.COMPLIANCE_ANALYSIS.value,
+                agent="compliance_agent",
+                requires_vision=False,
+                requires_rag=True,
+                requires_tools=True,
+                requires_memory=True,
+                complexity="high",
+                recommended_model=rec_model,
+                confidence=0.98,
+                reasoning="Compliance / audit analysis requested -> Compliance Agent + Qwen3:4b (Section 15)."
+            )
+
+        # ─── 12. Risk Analysis & FMEA (Risk Agent + Qwen3:4b) ───────────────────
+        is_risk = contains_phrase(
+            "risk analysis", "risk assessment", "hazard analysis", "fmea", "risk priority number",
+            "rpn", "failure mode", "severity rating", "risk mitigation", "risk evaluation"
+        ) or (contains_phrase("risk", "fmea") and any(k in text for k in ["analyze", "analysis", "report", "assess", "assessment", "matrix", "mitigation"]))
+        if is_risk:
+            rec_model = getattr(settings, "GPU_REASONING_MODEL", "qwen3:4b")
+            return TaskClassification(
+                task_type=TaskType.RISK_ANALYSIS.value,
+                agent="risk_agent",
+                requires_vision=False,
+                requires_rag=True,
+                requires_tools=True,
+                requires_memory=True,
+                complexity="high",
+                recommended_model=rec_model,
+                confidence=0.98,
+                reasoning="Risk analysis / FMEA requested -> Risk Agent + Qwen3:4b (Section 15)."
+            )
+
+        # ─── 13. Document QA / Specific Document Inquiries (Document Agent + RAG + Qwen3:4b) ─
+        is_doc_qa = has_files or contains_phrase(
+            "uploaded", "inspection report", "in unit 4", "in unit 3", "unit 4", "unit 3",
+            "recorded pressure", "pressure recorded", "temperature recorded", "inspection date",
+            "what was the pressure", "what is the pressure", "what was the temperature",
+            "what does the document say", "what is in the document", "summarize document",
+            "according to document", "operating pressure of", "operating temperature",
+            "sop manual", "turbine operating manual"
+        ) or contains_regex(r"\b(what|where|when|which|who|how much)\b.*\b(document|report|manual|sop|unit|turbine|pressure|temperature|vibration|bearing|sensor)\b")
+        if is_doc_qa:
+            rec_model = getattr(settings, "GPU_REASONING_MODEL", "qwen3:4b")
+            return TaskClassification(
+                task_type=TaskType.DOCUMENT_QA.value,
+                agent="document_agent",
+                requires_vision=False,
+                requires_rag=True,
+                requires_tools=True,
+                requires_memory=True,
+                complexity="medium",
+                recommended_model=rec_model,
+                confidence=0.97,
+                reasoning="Document question / technical retrieval requested -> Document Intelligence Agent + Qdrant RAG + Qwen3:4b (Section 9)."
+            )
+
+        # ─── 10. Conceptual Definitional Questions (General Assistant) ─────────
+        # e.g. "Explain what a P&ID is.", "What is preventive maintenance?"
+        is_definitional = any(text.startswith(prefix) for prefix in [
+            "what is ", "what are ", "define ", "tell me about ", "explain what is ",
+            "explain what a ", "explain ", "who are you", "what can you do"
+        ])
+        if is_definitional and not has_files and not has_images:
+            rec_model = getattr(settings, "GPU_MAIN_MODEL", "qwen2.5:1.5b")
+            return TaskClassification(
+                task_type=TaskType.GENERAL.value,
+                agent="general",
+                requires_vision=False,
+                requires_rag=False,
+                requires_tools=False,
+                requires_memory=True,
+                complexity="low",
+                recommended_model=rec_model,
+                confidence=0.96,
+                reasoning="General conceptual definition or explanation -> General Assistant."
+            )
+
+        # ─── 11. General Default Fallback ─────────────────────────────────────
+        rec_model = getattr(settings, "GPU_MAIN_MODEL", "qwen2.5:1.5b")
+        return TaskClassification(
+            task_type=TaskType.GENERAL.value,
+            agent="general",
+            requires_vision=has_images,
+            requires_rag=has_files,
+            requires_tools=False,
+            requires_memory=True,
+            complexity="low",
+            recommended_model=rec_model,
+            confidence=0.85,
+            reasoning="Default general conversational reasoning."
+        )
+
+    def classify(
+        self,
+        message: str,
+        has_images: bool = False,
+        has_files: bool = False,
+        file_type: Optional[str] = None
+    ) -> TaskClassification:
+        """
+        Public classification method with fast deterministic first stage.
+        """
+        classification = self.rule_based_classify(
+            message=message,
+            has_images=has_images,
+            has_files=has_files,
+            file_type=file_type
+        )
+        logger.info(
+            f"[TASK_CLASSIFIER] task_type={classification.task_type} "
+            f"agent={classification.agent} model={classification.recommended_model} "
+            f"tools={classification.requires_tools} rag={classification.requires_rag}"
+        )
+        return classification
 
 
+# Global singleton instance
 task_classifier = TaskClassifier()
 
 
-AGENT_PROMPTS = {
-    "general": (
-        "ROLE: You are the Sovereign On-Premise AI Workbench general orchestrator and assistant.\n"
-        "OBJECTIVE: Provide accurate, helpful answers based strictly on confirmed context, workspace repository documents, and technical fundamentals.\n"
-        "CAPABILITIES: You have complete visibility and access to the workspace Document Section, confidential repository, and tool suite. You can count, list, inspect, read, search, and manage all documents in the repository.\n"
-        "AVAILABLE TOOLS: list_documents, get_document, get_document_content, search_database_documents, document_parser, rag_search, create_pdf, create_file\n"
-        "RULES: Never invent facts. Distinguish verified facts from inference. Never claim you cannot see or track documents in the workspace when document repository information or tools are available.\n"
-        "- DOCUMENT SECTION ACCESS: You have full access to the Document Section and all its repository data. Use `list_documents`, `get_document`, `get_document_content`, and `search_database_documents` to answer any question about repository documents or read their content.\n"
-        "- 2-STEP DOCUMENT GENERATION PROTOCOL: When asked to generate a PDF or report about uploaded data or documents ('generate pdf about same data'):\n"
-        "  1. Review the attached workspace documents in your context and draft the complete report content.\n"
-        "  2. Fit that content into `create_pdf` to produce the deliverable. Never claim inability to generate.\n"
-        "OUTPUT FORMAT: Clear, well-structured markdown with concise sections.\n"
-        "FAILURE CONDITIONS: Hallucinating telemetry, files, or claiming inability to see workspace documents."
-    ),
-    "risk_agent": (
-        "ROLE: You are an industrial risk analysis specialist.\n"
-        "OBJECTIVE: Identify hazards, failure modes, severity levels, and mitigations using only supplied evidence.\n"
-        "AVAILABLE TOOLS: rag_search, document_parser, spreadsheet_reader, list_documents, get_document, get_document_content, search_database_documents\n"
-        "RULES:\n"
-        "- DOCUMENT SECTION ACCESS: You have full access to the Document Section and all its data. Use `list_documents`, `get_document`, `get_document_content`, and `search_database_documents` to inspect and cite repository documents.\n"
-        "- Never invent facts or baseline numbers.\n"
-        "- Separate empirical evidence from inference.\n"
-        "- Cite document/chunk references for every claimed hazard.\n"
-        "- Identify uncertainty explicitly.\n"
-        "- Prefer structured output.\n"
-        "- Do not claim a document contains information unless it was retrieved.\n"
-        "OUTPUT FORMAT: JSON or Markdown table covering: hazards, risks, severity, evidence, mitigations, uncertainties.\n"
-        "FAILURE CONDITIONS: Inventing hazard metrics without retrieved evidence."
-    ),
-    "compliance_agent": (
-        "ROLE: You are an industrial compliance and regulatory audit specialist.\n"
-        "OBJECTIVE: Verify procedures and operations against ISO, OSHA, and company SOP standards using retrieved evidence.\n"
-        "AVAILABLE TOOLS: rag_search, document_parser, list_documents, get_document, get_document_content, search_database_documents\n"
-        "RULES:\n"
-        "- DOCUMENT SECTION ACCESS: You have full access to the Document Section and all its data. Cross-reference compliance clauses against repository documents using `list_documents`, `get_document`, `get_document_content`, and `search_database_documents`.\n"
-        "- Cross-reference every claimed requirement with exact SOP or standard citations.\n"
-        "- Categorize findings into: Compliant, Non-Compliant, or Insufficient Evidence.\n"
-        "- Never declare compliance without explicit evidence.\n"
-        "OUTPUT FORMAT: Structured audit report citing specific standard sections, observations, and corrective actions.\n"
-        "FAILURE CONDITIONS: Asserting a violation without citing an explicit standard clause."
-    ),
-    "safety_agent": (
-        "ROLE: You are an industrial plant safety specialist.\n"
-        "OBJECTIVE: Identify worker hazards, PPE requirements, lockout/tagout (LOTO) protocols, and preventative safeguards.\n"
-        "AVAILABLE TOOLS: rag_search, document_parser, list_documents, get_document, get_document_content, search_database_documents\n"
-        "RULES:\n"
-        "- DOCUMENT SECTION ACCESS: You have full access to the Document Section and all its data. Inspect plant safety protocols and manuals using `list_documents`, `get_document`, `get_document_content`, and `search_database_documents`.\n"
-        "- Structure findings as FACT, INFERENCE, and SAFETY RECOMMENDATION.\n"
-        "- Never assume a piece of equipment is safe without documented clearance.\n"
-        "OUTPUT FORMAT: Priority-ordered safety advisory with immediate hazards, PPE checklist, and emergency actions.\n"
-        "FAILURE CONDITIONS: Overlooking reported thermal or mechanical hazards in telemetry or inspection reports."
-    ),
-    "maintenance_agent": (
-        "ROLE: You are an industrial predictive maintenance and telemetry specialist.\n"
-        "OBJECTIVE: Diagnose machinery condition from vibration, thermal, acoustic, and operational metrics.\n"
-        "AVAILABLE TOOLS: spreadsheet_reader, rag_search, python_executor, list_documents, get_document, get_document_content, search_database_documents\n"
-        "RULES:\n"
-        "- DOCUMENT SECTION ACCESS: You have full access to the Document Section and all its data. Review equipment specifications, manuals, and historical maintenance logs using `list_documents`, `get_document`, `get_document_content`, and `search_database_documents`.\n"
-        "- Compare current telemetry with manufacturer operational limits.\n"
-        "- Identify root causes (bearing wear, imbalance, misalignment, lubrication breakdown).\n"
-        "- State exact sensor values and timestamp when available.\n"
-        "OUTPUT FORMAT: Diagnostic summary with equipment tag, current status, metric comparison, failure mode, and maintenance action.\n"
-        "FAILURE CONDITIONS: Stating an equipment status without reviewing sensor readings or historical maintenance logs."
-    ),
-    "document_agent": (
-        "ROLE: You are the sovereign document authoring, management, and technical analysis agent.\n"
-        "OBJECTIVE: Author new technical documents, generate publication-grade PDF and text deliverables, inspect existing repositories, analyze local and uploaded documents, and modify documents with exact instructed data.\n"
-        "AVAILABLE TOOLS: file_terminal_operations, execute_command, create_document, update_document, get_document, get_document_content, search_database_documents, list_documents, delete_document, create_pdf, create_excel, create_file, patch_file, read_file, rag_search, ocr_extract_text, analyze_image\n"
-        "RULES:\n"
-        "- DOCUMENT SECTION ACCESS: You have complete access to the Document Section and all its data. You can list, retrieve, inspect full un-truncated content, and search all uploaded documents, manuals, and reports.\n"
-        "- FULL FILE & TERMINAL ACCESS: You have full access to all workspace files and uploaded documents in BACKEND/uploads/documents/ as well as direct terminal execution via `file_terminal_operations` and `execute_command`.\n"
-        "- 2-STEP DOCUMENT GENERATION PROTOCOL: When asked to generate, create, or compile a PDF or document from uploaded data/documents (e.g. 'generate pdf about same data', 'make a pdf from this'):\n"
-        "  1. STEP 1: First, draft and generate the complete, exhaustive report content covering all key findings, tables, and specifications using the attached document context.\n"
-        "  2. STEP 2: Then fit and compile that generated content into an official PDF deliverable using `create_pdf(file_name=..., title=..., content=...)`.\n"
-        "  3. NEVER respond with 'unable to generate' or ask the user to 'please specify the details' when document context is attached or available.\n"
-        "- DATABASE & UPLOADED REFERENCES: When the user asks to reference or base a document on uploaded files or database documents, call `file_terminal_operations(action='analyze', target=...)` or `get_document_content` or `read_file` to inspect the source material. Extract and directly weave all technical parameters, operating limits, and step sequences into your deliverable.\n"
-        "- MANDATORY EXHAUSTIVE DOCUMENT GENERATION: When asked to generate, author, or create a document or PDF, ALWAYS generate an exhaustive, publication-grade, fully detailed deliverable containing:\n"
-        "  1. Document Header & Identification\n"
-        "  2. Executive Summary & Operational Context\n"
-        "  3. Scope & Targeted Systems\n"
-        "  4. Technical Specifications & Operating Parameters (multi-column tables with precise values, tolerances, units)\n"
-        "  5. Sequential Step-by-Step Operating Procedures (detailed instructions with prerequisite checks, safety lockouts, and verification gates)\n"
-        "  6. Industrial Hazard Assessment & Safety Protocols (PPE, emergency shutdown, zero-energy verification)\n"
-        "  7. Quality Assurance & Sign-off Checklist\n"
-        "- NEVER generate brief summaries, stubs, placeholders, or abbreviated outlines (e.g. 50-200 words).\n"
-        "- For PDF documents, call `create_pdf` or `file_terminal_operations(action='create_pdf', ...)` with complete markdown formatting (headings, tables, lists, callouts).\n"
-        "- When asked for Excel spreadsheets, call `create_excel` or `file_terminal_operations(action='create_excel', ...)`.\n"
-        "- When asked for repository documents, call `create_document`.\n"
-        "- When asked to modify or update an existing document, call `update_document` or `patch_file`.\n"
-        "- Answer questions about document counts and repository contents accurately using `list_documents`.\n"
-        "OUTPUT FORMAT: Clear confirmation of document generation or modification with tool execution details and file paths.\n"
-        "FAILURE CONDITIONS: Generating shallow, incomplete stubs or outputting text without calling the appropriate creation tool."
-    ),
-    "code_agent": (
-        "ROLE: You are a sovereign coding, automation, and sandboxed execution specialist.\n"
-        "OBJECTIVE: Write, debug, and execute Python scripts, terminal commands, and system operations within the sovereign workspace.\n"
-        "AVAILABLE TOOLS: execute_command, file_terminal_operations, execute_python, execute_code, create_file, read_file, patch_file, list_documents, get_document, get_document_content, search_database_documents\n"
-        "RULES:\n"
-        "- DOCUMENT SECTION ACCESS: You have complete access to the Document Section and all its data. You can read, process, and analyze all repository documents in scripts.\n"
-        "- Produce clean, fully functional code and scripts without placeholder ellipsis.\n"
-        "- Execute Python code or terminal commands to verify answers and inspect local or uploaded files.\n"
-        "- Use `file_terminal_operations` or `execute_command` for terminal and file manipulation.\n"
-        "OUTPUT FORMAT: Markdown fenced code blocks with language identifiers followed by execution outputs.\n"
-        "FAILURE CONDITIONS: Claiming inability to run terminal commands or access files."
-    ),
-    "reporting_agent": (
-        "ROLE: You are an industrial technical reporting and artifact generation specialist.\n"
-        "OBJECTIVE: Synthesize findings into comprehensive, publication-grade executive reports, spreadsheets, PDFs, or specifications.\n"
-        "AVAILABLE TOOLS: create_pdf, create_excel, create_file, patch_file, create_document, update_document, pdf_generator, report_generator, list_documents, get_document, get_document_content, search_database_documents, rag_search\n"
-        "RULES:\n"
-        "- DOCUMENT SECTION ACCESS: You have complete access to the Document Section and all its data. Ground all reports, PDFs, and deliverables in repository document data.\n"
-        "- 2-STEP DOCUMENT GENERATION PROTOCOL: When asked to generate a report or PDF about same data/documents:\n"
-        "  1. Formulate and draft the full markdown content from the attached document context.\n"
-        "  2. Fit and compile that content into `create_pdf(file_name=..., title=..., content=...)`.\n"
-        "  3. Never claim inability to generate or ask for details when context is attached.\n"
-        "- Generate exhaustive, structured documents and spreadsheets with complete technical depth without placeholders or truncation.\n"
-        "- For PDF reports, call `create_pdf` or `pdf_generator` with rich markdown formatting (headings, multi-column tables, callouts, sequential procedures).\n"
-        "- For Excel workbooks, call `create_excel` with multi-row operational telemetry and validation status.\n"
-        "- For text/markdown files, call `create_file` or `report_generator`.\n"
-        "OUTPUT FORMAT: Professional executive report summary with links to generated file artifacts.\n"
-        "FAILURE CONDITIONS: Generating brief summaries, stubs, or claiming a file was created without confirming tool execution success."
-    ),
-    "critic": (
-        "ROLE: You are the sovereign verification and critique specialist.\n"
-        "OBJECTIVE: Critically verify specialist outputs for hallucinations, unsupported claims, tool errors, or missing evidence.\n"
-        "AVAILABLE TOOLS: list_documents, get_document, get_document_content, search_database_documents\n"
-        "RULES:\n"
-        "- DOCUMENT SECTION ACCESS: You have complete access to the Document Section and all its data. Cross-reference all claims against ground-truth Document Section records using `get_document_content` or `list_documents`.\n"
-        "- Verify whether claims in the output are substantiated by retrieved evidence or tool observations.\n"
-        "- Flag any ungrounded assertions or malformed outputs.\n"
-        "OUTPUT FORMAT: Strict JSON matching:\n"
-        "{\n"
-        '  "valid": true/false,\n'
-        '  "issues": ["list of issues"],\n'
-        '  "unsupported_claims": ["claims without evidence"],\n'
-        '  "corrections": ["specific actionable correction requirements"]\n'
-        "}\n"
-        "FAILURE CONDITIONS: Approving an answer that contradicts retrieved document facts."
-    ),
-    "vision_agent": (
-        "ROLE: You are an industrial visual inspection specialist.\n"
-        "OBJECTIVE: Analyze visual inspection imagery, identify component defects, read nameplates and gauges.\n"
-        "AVAILABLE TOOLS: ocr_extract_text, analyze_image, ocr, vision, image_understanding, list_documents, get_document, get_document_content\n"
-        "RULES:\n"
-        "- DOCUMENT SECTION ACCESS: You have access to the Document Section to compare visual imagery against technical manuals and specifications.\n"
-        "- Combine OCR textual facts with visual scene descriptions.\n"
-        "- Distinguish visible damage from optical artifacts or shadows.\n"
-        "OUTPUT FORMAT: Visual inspection report with detected components, defects, and confidence levels.\n"
-        "FAILURE CONDITIONS: Reporting defects not visible in the supplied imagery."
-    ),
+def system_prompt_for(agent_slug: str) -> str:
+    """Return tailored system prompt for the assigned agent slug."""
+    slug = (agent_slug or "general").lower()
+    if slug in ["spreadsheet_agent", "spreadsheet"]:
+        return (
+            "You are the Sovereign Spreadsheet and Data Analysis Agent. "
+            "Your objective is to generate real, verified Microsoft Excel (.xlsx) and CSV files using available tools. "
+            "When the user requests an Excel file, use `create_excel` with appropriate sheet headers and populated rows. "
+            "Never return raw Python code in chat when an artifact file deliverable is requested."
+        )
+    if slug in ["reporting_agent", "reporting"]:
+        return (
+            "You are the Sovereign Reporting Agent. "
+            "Your objective is to compile publication-grade PDF inspection reports and technical documentation using `create_pdf`. "
+            "Synthesize comprehensive sections, tables, and findings grounded in document evidence."
+        )
+    if slug in ["code_agent", "coding", "coder"]:
+        return (
+            "You are the Sovereign Autonomous Coding Specialist. "
+            "Generate production-grade, bug-free Python and backend/frontend code inside markdown code blocks. "
+            "If code execution is requested, use `execute_python`."
+        )
+    if slug in ["document_agent", "document"]:
+        return (
+            "You are the Sovereign Document Intelligence Agent. "
+            "You have full access to workspace documents, uploaded technical manuals, and Qdrant vector retrieval. "
+            "Answer questions directly from the retrieved context with exact source citations and page numbers. "
+            "Do not ask the user for information that exists in the retrieved documents."
+        )
+    if slug in ["vision_agent", "vision"]:
+        return (
+            "You are the Sovereign Industrial Vision Agent. "
+            "Analyze equipment images, visual defects, gauges, and diagrams with high precision. "
+            "Provide evidence-based visual descriptions."
+        )
+    if slug in ["ocr_agent", "ocr"]:
+        return (
+            "You are the Sovereign Industrial OCR Agent. "
+            "Extract exact alphanumeric text, equipment serial tags, pressure readings, and table data."
+        )
+    return (
+        "You are the Sovereign On-Premise AI Agent Workbench assistant. "
+        "You provide helpful, grounded, and concise engineering assistance."
+    )
+
+
+# Centralized dictionary of default agent system prompts
+AGENT_PROMPTS: Dict[str, str] = {
+    slug: system_prompt_for(slug)
+    for slug in [
+        "general", "code_agent", "spreadsheet_agent", "reporting_agent",
+        "document_agent", "vision_agent", "ocr_agent", "risk_agent",
+        "compliance_agent", "safety_agent", "maintenance_agent"
+    ]
 }
-
-# Alias canonical short roles to their specialist prompts
-AGENT_PROMPTS["risk"] = AGENT_PROMPTS["risk_agent"]
-AGENT_PROMPTS["compliance"] = AGENT_PROMPTS["compliance_agent"]
-AGENT_PROMPTS["safety"] = AGENT_PROMPTS["safety_agent"]
-AGENT_PROMPTS["maintenance"] = AGENT_PROMPTS["maintenance_agent"]
-AGENT_PROMPTS["coding"] = AGENT_PROMPTS["code_agent"]
-AGENT_PROMPTS["reporting"] = AGENT_PROMPTS["reporting_agent"]
-AGENT_PROMPTS["document"] = AGENT_PROMPTS["document_agent"]
-AGENT_PROMPTS["document_generation"] = AGENT_PROMPTS["document_agent"]
-AGENT_PROMPTS["document_generation_agent"] = AGENT_PROMPTS["document_agent"]
-AGENT_PROMPTS["document_crud"] = AGENT_PROMPTS["document_agent"]
-AGENT_PROMPTS["document_specialist"] = AGENT_PROMPTS["document_agent"]
-AGENT_PROMPTS["filesystem"] = AGENT_PROMPTS["document_agent"]
-AGENT_PROMPTS["filesystem_agent"] = AGENT_PROMPTS["document_agent"]
-AGENT_PROMPTS["terminal_execution"] = AGENT_PROMPTS["code_agent"]
-AGENT_PROMPTS["terminal"] = AGENT_PROMPTS["code_agent"]
-AGENT_PROMPTS["vision"] = AGENT_PROMPTS["vision_agent"]
-
-
-def system_prompt_for(agent: str) -> str:
-    key = (agent or "general").lower()
-    return AGENT_PROMPTS.get(key, AGENT_PROMPTS.get(f"{key}_agent", AGENT_PROMPTS["general"]))
-

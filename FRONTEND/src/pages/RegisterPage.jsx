@@ -134,7 +134,7 @@ const RegisterPage = () => {
             </div>
             <div>
               <h2 className="text-base font-bold text-slate-900 tracking-tight">
-                Provision Sovereign Operator
+                Provision SWaRaj Operator
               </h2>
               <p className="text-xs text-slate-500">
                 Authorized administrator credential issuance.

@@ -52,8 +52,8 @@ const SovereignStatusModal = () => {
     <Modal
       isOpen={isStatusModalOpen}
       onClose={() => setIsStatusModalOpen(false)}
-      title="Sovereign AI Status"
-      subtitle="Hardware-enforced air-gapped cryptographic assurance"
+      title="SWaRaj Security & Air-Gap Verification"
+      subtitle="Hardware-enforced air-gapped cryptographic assurance (PSU / Defense grade)"
       icon={ShieldCheck}
       maxWidth="max-w-lg"
     >
@@ -66,7 +66,7 @@ const SovereignStatusModal = () => {
             </div>
             <div>
               <div className="text-xs font-bold text-emerald-950 uppercase tracking-wider">
-                Sovereign Mode Verified
+                SWaRaj Air-Gap Verified
               </div>
               <div className="text-[11px] text-emerald-800">
                 100% Isolated Environment • Zero Data Egress

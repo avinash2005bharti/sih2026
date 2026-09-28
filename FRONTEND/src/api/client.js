@@ -14,6 +14,18 @@ const client = axios.create({
   timeout: 120000,
 });
 
+// Request interceptor to attach Bearer token if available in localStorage
+client.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('sovereign_token');
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
 // Response interceptor for unified error formatting
 client.interceptors.response.use(
   (response) => response,

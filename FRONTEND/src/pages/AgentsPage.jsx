@@ -17,6 +17,7 @@ import Badge from '../components/common/Badge';
 import Modal from '../components/common/Modal';
 import Loader from '../components/common/Loader';
 import { useAuth } from '../context/AuthContext';
+import { useChat } from '../context/ChatContext';
 
 const AGENT_TYPES = [
   'orchestrator',
@@ -35,9 +36,9 @@ const AGENT_TYPES = [
 
 const AgentsPage = () => {
   const { user } = useAuth();
+  const { agents, setAgents, refreshAgents } = useChat();
   const isAdmin = user?.isAdmin || user?.role === 'admin';
 
-  const [agents, setAgents] = useState([]);
   const [models, setModels] = useState([]);
   const [ollamaModels, setOllamaModels] = useState([]);
   const [loading, setLoading] = useState(true);

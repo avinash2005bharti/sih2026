@@ -399,3 +399,228 @@ async def delete_document_route(document_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/documents/{document_id}/chunks", summary="Get all vector chunks for a document")
+async def get_document_chunks(document_id: str, limit: int = 200):
+    """
+    Retrieve all vector chunks directly from Qdrant for a specific document_id.
+    Allows autonomous agents and callers to inspect stored knowledge.
+    """
+    try:
+        from rag.qdrant_client import qdrant_client
+        pts = await qdrant_client.get_all_points_by_document_id(document_id, limit=limit)
+        
+        # If no points by exact ID, also try resolving document by name from document_store
+        if not pts:
+            doc = document_store.get_document(document_id, is_admin=True)
+            if doc and doc.get("document_id") and doc.get("document_id") != document_id:
+                pts = await qdrant_client.get_all_points_by_document_id(doc["document_id"], limit=limit)
+
+        formatted_chunks = []
+        for p in pts:
+            pl = p.get("payload", {})
+            formatted_chunks.append({
+                "point_id": p.get("id"),
+                "chunk_id": pl.get("chunk_id", ""),
+                "document_id": pl.get("document_id", document_id),
+                "filename": pl.get("filename", pl.get("source", "")),
+                "page": pl.get("page", 1),
+                "text": pl.get("text", ""),
+                "char_length": len(pl.get("text", "")),
+                "metadata": pl.get("metadata", {})
+            })
+
+        return {
+            "success": True,
+            "document_id": document_id,
+            "chunks_count": len(formatted_chunks),
+            "chunks": formatted_chunks
+        }
+    except Exception as e:
+        logger.error(f"Error retrieving chunks for document {document_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve chunks: {str(e)}")
+
+
+@router.get("/documents/{document_id}/content", summary="Get full un-truncated content of a document")
+async def get_document_content_route(document_id: str):
+    """
+    Retrieve complete full text content of a document from database or disk storage.
+    Enables agents to read full manuals, SOPs, and technical specifications.
+    """
+    try:
+        doc = document_store.get_document(document_id, is_admin=True)
+        if not doc:
+            raise HTTPException(status_code=404, detail=f"Document '{document_id}' not found.")
+
+        content = doc.get("extractedText") or ""
+        if not content or len(content.strip()) < 50:
+            fpath = doc.get("filePath") or doc.get("file_path") or doc.get("name")
+            content = document_store._read_full_document_content(fpath)
+
+        return {
+            "success": True,
+            "document_id": doc.get("document_id") or doc.get("_id"),
+            "name": doc.get("name") or doc.get("originalName"),
+            "document_type": doc.get("documentType", "unknown"),
+            "file_size": doc.get("fileSize", 0),
+            "content_length": len(content),
+            "content": content
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting document content for {document_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class AgentRetrieveRequest(BaseModel):
+    query: str = Field(..., description="Query text to search")
+    document_id: Optional[str] = Field(None, description="Optional target document ID")
+    top_k: int = Field(5, ge=1, le=20, description="Max chunks to return")
+    score_threshold: float = Field(0.0, description="Minimum score threshold")
+    user_id: Optional[str] = Field(None, description="User ID for RBAC")
+    is_admin: bool = Field(True, description="Whether requesting agent has admin/unrestricted workspace access")
+
+
+@router.post("/documents/retrieve", summary="Direct evidence retrieval for agents")
+async def agent_retrieve_route(req: AgentRetrieveRequest):
+    """
+    Direct hybrid retrieval endpoint for autonomous agents and tools.
+    Returns ranked evidence chunks, citations, and pre-formatted context block.
+    """
+    try:
+        results = await rag_retriever.retrieve(
+            query=req.query,
+            top_k=req.top_k,
+            score_threshold=req.score_threshold,
+            document_id=req.document_id,
+            user_id=req.user_id,
+            is_admin=req.is_admin
+        )
+        context_block = rag_retriever.build_context_block(results)
+
+        return {
+            "success": True,
+            "query": req.query,
+            "document_id": req.document_id,
+            "count": len(results),
+            "chunks": results,
+            "context_block": context_block
+        }
+    except Exception as e:
+        logger.error(f"Agent retrieval error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/debug/rag/document/{document_id}", summary="Debug RAG status and vectors for document")
+async def debug_rag_document(document_id: str):
+    """
+    Comprehensive diagnostics endpoint for Qdrant collection, vectors,
+    chunk payload integrity, and simulated retrieval test for a specific document.
+    """
+    try:
+        from rag.qdrant_client import qdrant_client
+        from rag.embeddings import embeddings_service
+
+        db_doc = document_store.get_document(document_id, is_admin=True)
+        resolved_doc_id = str(db_doc.get("document_id") or db_doc.get("_id")) if db_doc else document_id
+
+        # 1. Qdrant Collection Info
+        col_info = await qdrant_client.get_collection_info()
+        vector_size = col_info.get("config", {}).get("params", {}).get("vectors", {}).get("size") if col_info else None
+        total_col_points = col_info.get("points_count", 0) if col_info else 0
+
+        # 2. Embedding Dimension Check
+        try:
+            detected_dim = await embeddings_service.detect_dimension()
+        except Exception:
+            detected_dim = 768
+
+        dim_matches = (vector_size == detected_dim)
+
+        # 3. Document Chunk Points in Qdrant
+        points = await qdrant_client.get_all_points_by_document_id(resolved_doc_id, limit=50)
+        chunks_count = len(points)
+
+        sample_chunks = []
+        payload_keys = set()
+        for p in points[:3]:
+            pl = p.get("payload", {})
+            payload_keys.update(pl.keys())
+            sample_chunks.append({
+                "point_id": p.get("id"),
+                "chunk_id": pl.get("chunk_id"),
+                "filename": pl.get("filename"),
+                "page": pl.get("page"),
+                "snippet": pl.get("text", "")[:200]
+            })
+
+        # 4. Simulated Retrieval Test
+        test_query = "pressure temperature inspection unit findings"
+        test_results = await rag_retriever.retrieve(
+            query=test_query,
+            top_k=3,
+            document_id=resolved_doc_id,
+            is_admin=True
+        )
+
+        return {
+            "status": "ok" if chunks_count > 0 and dim_matches else "warning",
+            "document_id": resolved_doc_id,
+            "document_name": db_doc.get("name") if db_doc else None,
+            "mongodb_record_found": db_doc is not None,
+            "qdrant_collection": qdrant_client.collection,
+            "qdrant_vector_dimension": vector_size,
+            "embedding_model_dimension": detected_dim,
+            "dimension_matches": dim_matches,
+            "total_collection_points": total_col_points,
+            "document_chunks_in_qdrant": chunks_count,
+            "payload_fields_verified": sorted(list(payload_keys)),
+            "sample_chunks": sample_chunks,
+            "test_retrieval": {
+                "query": test_query,
+                "hits_returned": len(test_results),
+                "top_score": test_results[0].get("score") if test_results else None,
+                "top_chunk_snippet": test_results[0].get("text", "")[:150] if test_results else None
+            }
+        }
+    except Exception as e:
+        logger.error(f"Debug RAG document failed for {document_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/debug/rag/overview", summary="Debug overview of RAG and all documents")
+async def debug_rag_overview():
+    """System-wide RAG diagnostics."""
+    try:
+        from rag.qdrant_client import qdrant_client
+        from rag.embeddings import embeddings_service
+
+        col_info = await qdrant_client.get_collection_info()
+        vector_size = col_info.get("config", {}).get("params", {}).get("vectors", {}).get("size") if col_info else None
+        points_count = col_info.get("points_count", 0) if col_info else 0
+        qdrant_healthy = await qdrant_client.health_check()
+
+        all_docs = document_store.list_documents(limit=100, is_admin=True)
+
+        return {
+            "qdrant_healthy": qdrant_healthy,
+            "collection": qdrant_client.collection,
+            "vector_dimension": vector_size,
+            "total_indexed_points": points_count,
+            "total_documents_in_db": len(all_docs),
+            "documents": [
+                {
+                    "document_id": d.get("document_id") or d.get("_id"),
+                    "name": d.get("name") or d.get("originalName"),
+                    "type": d.get("documentType"),
+                    "status": d.get("processingStatus")
+                }
+                for d in all_docs
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Debug RAG overview failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+

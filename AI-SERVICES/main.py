@@ -24,26 +24,89 @@ async def lifespan(app: FastAPI):
     logger.info(f"Host: {settings.HOST}:{settings.PORT}")
     logger.info(f"Ollama Endpoint: {settings.OLLAMA_BASE_URL}")
 
-    # Safe hardware detection
-    hw = detect_hardware()
-    if hw.get("nvidiaAvailable"):
-        logger.info(f"Hardware: NVIDIA GPU detected -> {hw.get('gpuName')} (Driver: {hw.get('driverVersion')})")
-        logger.info("GPU acceleration mode enabled for local Ollama")
-    else:
-        logger.info("Hardware: NVIDIA GPU not available -> CPU / integrated graphics mode enabled")
+    # Safe hardware detection and profile resolution
+    from core.hardware import detect_hardware, get_hardware_profile, PROFILE_GPU_RTX2050
+    from llm.model_registry import model_registry
 
-    # Safe Ollama reachability probe
+    hw = detect_hardware()
+    hw_profile = get_hardware_profile()
+    is_gpu = hw_profile == PROFILE_GPU_RTX2050
+
+    logger.info(f"Hardware Profile Active: {hw_profile}")
+    if is_gpu:
+        logger.info(f"GPU Hardware: {hw.get('gpuName')} ({hw.get('gpuMemoryMB', 4096)} MB VRAM) -> Profile: GPU_RTX2050")
+    else:
+        logger.info("Hardware: CPU-Only profile active -> Lightweight SLMs enabled")
+
+    # ─── Connect Valkey cache ────────────────────────────────────
+    try:
+        from services.cache_service import cache_service
+        cache_connected = await cache_service.connect()
+        if cache_connected:
+            logger.info("[STARTUP] ✅ Valkey cache connected and ready")
+        else:
+            logger.warning("[STARTUP] ⚠️  Valkey cache unavailable — operating without cache (degraded mode)")
+    except Exception as cache_err:
+        logger.warning(f"[STARTUP] Valkey cache startup error: {cache_err}")
+
+    # ─── Safe Ollama reachability probe and startup model verification ─
     try:
         ollama_status = await ollama_client.health_check()
         if ollama_status.get("available"):
             models_list = ollama_status.get("models_available", [])
-            logger.info(f"[OLLAMA] Connected at {settings.OLLAMA_BASE_URL} ({len(models_list)} models available)")
+            logger.info(f"[OLLAMA] Connected at {settings.OLLAMA_BASE_URL} ({len(models_list)} models available on host)")
+            model_registry.update_installed_models(models_list)
+
+            # Check configured models against installed list
+            roles = ["general", "coding", "vision", "classifier", "router", "embedding", "fallback", "planner"]
+            missing_models = []
+            for r in roles:
+                target = model_registry.get_default_model_for_role(r)
+                if not model_registry.is_installed(target):
+                    fallback = model_registry.resolve_model(r)
+                    logger.warning(
+                        f"[OLLAMA] Configured model '{target}' for role '{r}' not installed. "
+                        f"Resolved fallback: '{fallback}'"
+                    )
+                    missing_models.append(target)
+                else:
+                    logger.info(f"[OLLAMA] Model verified for role '{r}': '{target}' [OK]")
+
+            if missing_models:
+                logger.info(f"[OLLAMA] Missing models: {', '.join(missing_models)}")
+                logger.info("[OLLAMA] Run: python scripts/pull_models.py --auto-pull")
+                if getattr(settings, "OLLAMA_AUTO_PULL", False):
+                    logger.info("[OLLAMA] OLLAMA_AUTO_PULL=true — pulling missing models...")
+                    for m in missing_models:
+                        try:
+                            async with __import__("httpx").AsyncClient(timeout=600.0) as hc:
+                                resp = await hc.post(
+                                    f"{settings.OLLAMA_BASE_URL}/api/pull",
+                                    json={"name": m, "stream": False}
+                                )
+                                logger.info(f"[OLLAMA] Pulled '{m}' — status {resp.status_code}")
+                        except Exception as pull_err:
+                            logger.warning(f"[OLLAMA] Pull failed for '{m}': {pull_err}")
+
+            # ─── Warm up always-warm small models in background ────
+            async def _warmup_task():
+                try:
+                    warm_models_str = getattr(settings, "ALWAYS_WARM_MODELS",
+                                              "qwen2.5:0.5b,qwen2.5:1.5b,qwen3:0.6b,nomic-embed-text")
+                    warm_models = [m.strip() for m in warm_models_str.split(",") if m.strip()]
+                    logger.info(f"[STARTUP] Pre-warming {len(warm_models)} models: {warm_models}")
+                    await ollama_client.keep_models_warm(warm_models)
+                    logger.info("[STARTUP] ✅ Model warmup complete")
+                except Exception as wu_err:
+                    logger.warning(f"[STARTUP] Model warmup warning: {wu_err}")
+
+            asyncio.create_task(_warmup_task())
+
         else:
             logger.warning("=" * 60)
-            logger.warning("[WARNING] Ollama is not installed or is not running at %s.", settings.OLLAMA_BASE_URL)
-            logger.warning("Please install Ollama and run:")
-            logger.warning("    ollama serve")
-            logger.warning("The AI Service will continue running in offline/degraded mode.")
+            logger.warning("[WARNING] Ollama is not running at %s.", settings.OLLAMA_BASE_URL)
+            logger.warning("Please install/start Ollama with: ollama serve")
+            logger.warning("The AI Service will continue running in degraded offline mode.")
             logger.warning("=" * 60)
     except Exception as e:
         logger.warning(f"Ollama probe failed: {e}. Continuing in degraded mode.")
@@ -69,7 +132,16 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # ─── Shutdown: close cache connection ───────────────────────
+    try:
+        from services.cache_service import cache_service
+        await cache_service.close()
+        logger.info("[SHUTDOWN] Valkey cache connection closed")
+    except Exception:
+        pass
+
     logger.info(f"{settings.APP_NAME} shutting down")
+
 
 
 # Create FastAPI app with lifespan
@@ -97,7 +169,7 @@ app.add_middleware(
 # Include routers with proper prefixes
 app.include_router(health.router, tags=["health"])
 app.include_router(chat.router, tags=["chat"])
-app.include_router(models.router, prefix="/api", tags=["models"])
+app.include_router(models.router, tags=["models"])
 app.include_router(documents.router, tags=["documents"])
 app.include_router(vision.router, tags=["vision"])
 app.include_router(tasks.router, tags=["tasks"])

@@ -3,7 +3,17 @@ import { useAuth } from './AuthContext';
 import chatApi from '../api/chatApi';
 import agentApi from '../api/agentApi';
 import modelApi from '../api/modelApi';
-import { initializeSocket, disconnectSocket, sendChatMessage, subscribeToChatEvents, joinConversation, stopChatMessage } from '../services/socket';
+import {
+  initializeSocket,
+  disconnectSocket,
+  sendChatMessage,
+  subscribeToChatEvents,
+  joinConversation,
+  stopChatMessage,
+  subscribeToAgentEvents,
+  switchSocketAgent,
+  requestSocketActiveAgent
+} from '../services/socket';
 
 const ChatContext = createContext(null);
 
@@ -26,18 +36,41 @@ export const ChatProvider = ({ children }) => {
   const [models, setModels] = useState([AUTO_MODEL]);
   const [selectedModel, setSelectedModel] = useState(AUTO_MODEL);
 
+  // Central Single Source of Truth for Real-Time Backend Active Agent
+  const [activeAgentState, setActiveAgentState] = useState({
+    name: 'General Assistant',
+    slug: 'general',
+    status: 'idle', // 'idle' | 'running' | 'error'
+    lastUpdated: new Date().toISOString(),
+  });
+
   // Deep reasoning & UI toggles
   const [deepReasoning, setDeepReasoning] = useState(true);
   const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
   const [activeReasoningTrace, setActiveReasoningTrace] = useState(null);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(() => {
+    // Default open on desktop, closed on mobile
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('swaraj_sidebar_open');
+      if (saved !== null) return saved === 'true';
+      return window.innerWidth >= 1024;
+    }
+    return true;
+  });
 
   // Socket.IO connection status
   const [socketConnected, setSocketConnected] = useState(false);
   const socketRef = useRef(null);
   const unsubscribeChatEventsRef = useRef(null);
 
-  // Initialize Socket.IO only when authenticated
+  // Persist sidebar preference
+  const toggleSidebar = useCallback((value) => {
+    const newValue = typeof value === 'boolean' ? value : !isSidebarOpen;
+    setIsSidebarOpen(newValue);
+    localStorage.setItem('swaraj_sidebar_open', String(newValue));
+  }, [isSidebarOpen]);
+
+  // Initialize Socket.IO and Agent Sync when authenticated
   useEffect(() => {
     if (!user) {
       disconnectSocket();
@@ -51,6 +84,7 @@ export const ChatProvider = ({ children }) => {
     const onConnect = () => {
       console.log("✅ ChatContext: Socket connected");
       setSocketConnected(true);
+      requestSocketActiveAgent();
     };
 
     const onDisconnect = () => {
@@ -61,14 +95,83 @@ export const ChatProvider = ({ children }) => {
     socket.on("connect", onConnect);
     socket.on("disconnect", onDisconnect);
 
+    // Subscribe to real-time agent sync from backend
+    const unsubscribeAgentSync = subscribeToAgentEvents((data) => {
+      if (data) {
+        setActiveAgentState((prev) => ({
+          ...prev,
+          name: data.name || prev.name,
+          slug: data.slug || prev.slug,
+          status: data.status || prev.status,
+          lastUpdated: data.lastUpdated || new Date().toISOString(),
+          _id: data._id || prev._id,
+        }));
+      }
+    });
+
     // Set initial state
     setSocketConnected(socket.connected);
+    if (socket.connected) {
+      requestSocketActiveAgent();
+    }
 
     return () => {
       socket.off("connect", onConnect);
       socket.off("disconnect", onDisconnect);
+      if (unsubscribeAgentSync) unsubscribeAgentSync();
     };
   }, [user]);
+
+  // Fallback Polling (Every 4s) to ensure agent sync if socket reconnects or lags
+  useEffect(() => {
+    if (!user) return;
+    const interval = setInterval(async () => {
+      try {
+        const data = await agentApi.getActiveAgent();
+        if (data?.agent) {
+          setActiveAgentState((prev) => {
+            if (isGenerating && prev.status === 'running') return prev;
+            return {
+              name: data.agent.name || prev.name,
+              slug: data.agent.slug || prev.slug,
+              status: data.agent.status || prev.status,
+              lastUpdated: data.agent.lastUpdated || prev.lastUpdated,
+              _id: data.agent._id || prev._id,
+            };
+          });
+        }
+        
+        // Poll agents list to keep dashboard in sync with backend
+        const agentsData = await agentApi.getAgents();
+        if (agentsData?.agents) {
+          setAgents(agentsData.agents);
+        }
+      } catch (err) {
+        // Silently swallow polling errors
+      }
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, [user, isGenerating]);
+
+  // Switch agent function with instant optimistic UI update + WebSocket sync
+  const switchAgent = useCallback((agent) => {
+    if (!agent) return;
+    setSelectedAgent(agent);
+    const updated = {
+      name: agent.name,
+      slug: agent.slug,
+      _id: agent._id,
+      status: 'idle',
+      lastUpdated: new Date().toISOString(),
+    };
+    setActiveAgentState(updated);
+    switchSocketAgent({
+      agentId: agent._id,
+      agentSlug: agent.slug,
+      name: agent.name,
+    });
+  }, []);
 
   // Fetch all chats from the backend
   const fetchChats = useCallback(async () => {
@@ -239,6 +342,7 @@ export const ChatProvider = ({ children }) => {
             streamingMessage.visionProgress = null;
             setMessages((prev) => [...prev, streamingMessage]);
             setIsGenerating(true);
+            setActiveAgentState((prev) => ({ ...prev, status: 'running', lastUpdated: new Date().toISOString() }));
           },
           onProgress: (data) => {
             console.log("🔍 Vision progress:", data.message);
@@ -313,17 +417,20 @@ export const ChatProvider = ({ children }) => {
             });
             setIsGenerating(false);
             setCurrentRequestId(null);
+            setActiveAgentState((prev) => ({ ...prev, status: 'idle', lastUpdated: new Date().toISOString() }));
           },
           onStopped: (data) => {
             console.log("🛑 Chat stopped via Socket", data);
             setIsGenerating(false);
             setCurrentRequestId(null);
+            setActiveAgentState((prev) => ({ ...prev, status: 'idle', lastUpdated: new Date().toISOString() }));
           },
           onError: (error) => {
             console.error("❌ Chat error via Socket:", error);
             setSendError(error.error || 'Failed to get a response');
             setIsGenerating(false);
             setCurrentRequestId(null);
+            setActiveAgentState((prev) => ({ ...prev, status: 'error', lastUpdated: new Date().toISOString() }));
             // Remove optimistic message
             setMessages((prev) =>
               prev.filter((m) => m._id !== streamingMessage._id && m._id !== userMsg._id)
@@ -333,9 +440,7 @@ export const ChatProvider = ({ children }) => {
 
         // Send message via Socket.IO
         const modelToUse = selectedModel?.displayName || 'auto';
-        // Agent selection belongs to the Python orchestrator.  The UI may
-        // still display available agents, but must not force a generic agent.
-        const agentToUse = 'auto';
+        const agentToUse = selectedAgent?.slug || 'auto';
         const reqId = 'req_' + Date.now();
         setCurrentRequestId(reqId);
         const imagesToSend = attachment?.base64 ? [attachment.base64] : [];
@@ -357,11 +462,13 @@ export const ChatProvider = ({ children }) => {
           throw new Error('No assistant response received');
         }
         setIsGenerating(false);
+        setActiveAgentState((prev) => ({ ...prev, status: 'idle', lastUpdated: new Date().toISOString() }));
       }
     } catch (err) {
       console.error('Send message failed:', err.message);
       setSendError('Failed to get a response. Please try again.');
       setIsGenerating(false);
+      setActiveAgentState((prev) => ({ ...prev, status: 'error', lastUpdated: new Date().toISOString() }));
       // Remove the optimistic user message to keep UI consistent
       setMessages((prev) => prev.filter((m) => m._id !== userMsg._id));
     }
@@ -374,6 +481,7 @@ export const ChatProvider = ({ children }) => {
       console.log('🛑 Requesting generation stop for', currentRequestId);
       stopChatMessage(currentRequestId, activeChatId);
       setIsGenerating(false); // Optimistic UI update
+      setActiveAgentState((prev) => ({ ...prev, status: 'idle', lastUpdated: new Date().toISOString() }));
     }
   }, [socketConnected, currentRequestId, activeChatId]);
 
@@ -401,8 +509,11 @@ export const ChatProvider = ({ children }) => {
         isGenerating,
         sendError,
         agents,
+        setAgents,
         selectedAgent,
         setSelectedAgent,
+        switchAgent,
+        activeAgentState,
         models,
         selectedModel,
         setSelectedModel,
@@ -414,12 +525,14 @@ export const ChatProvider = ({ children }) => {
         setActiveReasoningTrace,
         isSidebarOpen,
         setIsSidebarOpen,
+        toggleSidebar,
         socketConnected,
         selectChat,
         createNewChat,
         sendMessage,
         deleteChat,
         refreshChats: fetchChats,
+        refreshAgents: fetchAgents,
         stopGeneration,
       }}
     >

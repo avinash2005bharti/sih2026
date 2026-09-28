@@ -1,35 +1,28 @@
 import React from 'react';
+import swarajLoading from '../../asset/swaraj_loading-removebg-preview.png';
 
-export const Loader = ({ text = 'Loading...', size = 'md' }) => {
+export const Loader = ({ text = 'Loading SWaRaj AI...', size = 'md' }) => {
   const sizeMap = {
-    sm: 'w-4 h-4',
-    md: 'w-6 h-6',
-    lg: 'w-8 h-8',
+    sm: 'w-7 h-7',
+    md: 'w-12 h-12',
+    lg: 'w-16 h-16',
   };
 
   return (
-    <div className="flex flex-col items-center justify-center p-8 text-slate-500 gap-3">
-      <svg
-        className={`animate-spin text-blue-600 ${sizeMap[size] || sizeMap.md}`}
-        xmlns="http://www.w3.org/2000/svg"
-        fill="none"
-        viewBox="0 0 24 24"
-      >
-        <circle
-          className="opacity-25"
-          cx="12"
-          cy="12"
-          r="10"
-          stroke="currentColor"
-          strokeWidth="4"
-        ></circle>
-        <path
-          className="opacity-75"
-          fill="currentColor"
-          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-        ></path>
-      </svg>
-      {text && <span className="text-xs font-medium text-slate-500">{text}</span>}
+    <div className="flex flex-col items-center justify-center p-6 text-slate-500 gap-3 animate-in fade-in duration-200">
+      <div className="relative flex items-center justify-center">
+        <div className="absolute -inset-1 rounded-2xl bg-blue-500/10 animate-pulse" />
+        <img
+          src={swarajLoading}
+          alt="SWaRaj Loading"
+          className={`${sizeMap[size] || sizeMap.md} object-contain animate-pulse drop-shadow-sm select-none`}
+        />
+      </div>
+      {text && (
+        <span className="text-xs font-semibold text-slate-600 tracking-tight font-sans">
+          {text}
+        </span>
+      )}
     </div>
   );
 };

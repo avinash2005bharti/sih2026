@@ -383,13 +383,35 @@ const SettingsPage = () => {
       {/* Tab 3: Cluster Parameters */}
       {currentTab === 'cluster' && (
         <Card className="p-6 animate-in fade-in duration-150">
-          <h3 className="text-sm font-bold text-slate-900 mb-1 flex items-center gap-2">
-            <Server className="w-4 h-4 text-emerald-600" />
-            Air-Gapped Cluster Parameters
-          </h3>
-          <p className="text-xs text-slate-500 mb-4">
-            Direct configuration keys stored in MongoDB <code className="font-mono text-[11px]">SystemSetting</code> collection.
-          </p>
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 mb-1 flex items-center gap-2">
+                <Server className="w-4 h-4 text-emerald-600" />
+                Air-Gapped Cluster Parameters & System Info
+              </h3>
+              <p className="text-xs text-slate-500">
+                Direct configuration keys stored in MongoDB <code className="font-mono text-[11px]">SystemSetting</code> collection.
+              </p>
+            </div>
+          </div>
+
+          {/* Air-Gapped Cluster Verification Badge (Moved from Sidebar) */}
+          <div className="p-3.5 mb-4 rounded-xl bg-emerald-50 border border-emerald-200/90 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse flex-shrink-0" />
+              <div>
+                <span className="text-xs font-mono font-bold tracking-wider text-emerald-900 uppercase block">
+                  Air-Gapped Cluster Active
+                </span>
+                <span className="text-[11px] text-emerald-700 font-mono">
+                  On-Premise • Zero Egress • Tamper-Proof Cryptographic Verification
+                </span>
+              </div>
+            </div>
+            <span className="text-[10px] font-mono px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded font-bold">
+              FIPS-L4
+            </span>
+          </div>
 
           {statusMsg && (
             <div className="p-2.5 mb-3 bg-emerald-50 text-emerald-700 rounded-lg text-xs font-mono">

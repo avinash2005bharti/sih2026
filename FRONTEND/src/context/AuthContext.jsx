@@ -37,6 +37,7 @@ export const AuthProvider = ({ children }) => {
         if (err.status === 401 && isMounted) {
           setUser(null);
           localStorage.removeItem('sovereign_user');
+          localStorage.removeItem('sovereign_token');
         }
       } finally {
         if (isMounted) {
@@ -58,6 +59,7 @@ export const AuthProvider = ({ children }) => {
       localStorage.setItem('sovereign_user', JSON.stringify(user));
     } else {
       localStorage.removeItem('sovereign_user');
+      localStorage.removeItem('sovereign_token');
     }
   }, [user]);
 
@@ -67,6 +69,9 @@ export const AuthProvider = ({ children }) => {
     try {
       const res = await authApi.login({ email, password });
       if (res && res.user) {
+        if (res.token) {
+          localStorage.setItem('sovereign_token', res.token);
+        }
         setUser(res.user);
         return res.user;
       }
@@ -85,6 +90,12 @@ export const AuthProvider = ({ children }) => {
     setAuthError(null);
     try {
       const res = await authApi.register(userData);
+      if (res && res.token) {
+        localStorage.setItem('sovereign_token', res.token);
+      }
+      if (res && res.user) {
+        setUser(res.user);
+      }
       return res;
     } catch (err) {
       setAuthError(err.message || 'Registration failed');
@@ -102,6 +113,7 @@ export const AuthProvider = ({ children }) => {
     } finally {
       setUser(null);
       localStorage.removeItem('sovereign_user');
+      localStorage.removeItem('sovereign_token');
     }
   };
 

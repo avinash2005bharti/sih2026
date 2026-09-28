@@ -18,7 +18,12 @@ let socket = null;
  * @returns {Object} Socket instance
  */
 export const initializeSocket = () => {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('sovereign_token') : null;
   if (socket) {
+    if (token) {
+      socket.auth = socket.auth || {};
+      socket.auth.token = token;
+    }
     if (socket.disconnected) {
       socket.connect();
     }
@@ -36,6 +41,8 @@ export const initializeSocket = () => {
     reconnectionDelay: 1000,
     reconnectionDelayMax: 5000,
     reconnectionAttempts: 5,
+    auth: { token },
+    extraHeaders: token ? { Authorization: `Bearer ${token}` } : {},
     withCredentials: true, // Important: Include httpOnly JWT cookies
     transports: ["websocket", "polling"],
   });
@@ -254,6 +261,34 @@ export const subscribeToHealthEvents = (onStatus) => {
   };
 };
 
+/**
+ * Real-Time Agent Sync Methods
+ */
+export const subscribeToAgentEvents = (onAgentSync) => {
+  if (!socket) return () => {};
+
+  const handler = (data) => {
+    console.log("🤖 agent:sync", data);
+    onAgentSync?.(data);
+  };
+
+  socket.on("agent:sync", handler);
+
+  return () => {
+    socket.off("agent:sync", handler);
+  };
+};
+
+export const switchSocketAgent = (agentData) => {
+  if (!socket) return;
+  socket.emit("agent:switch", agentData);
+};
+
+export const requestSocketActiveAgent = () => {
+  if (!socket) return;
+  socket.emit("agent:get_active");
+};
+
 export default {
   initializeSocket,
   getSocket,
@@ -266,4 +301,7 @@ export default {
   stopChatMessage,
   subscribeToChatEvents,
   subscribeToHealthEvents,
+  subscribeToAgentEvents,
+  switchSocketAgent,
+  requestSocketActiveAgent,
 };

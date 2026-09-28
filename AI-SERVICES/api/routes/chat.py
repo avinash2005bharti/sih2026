@@ -293,6 +293,8 @@ class ChatResponse(BaseModel):
     vision: Optional[Dict[str, Any]] = Field(None, description="Visual understanding details")
     combined_context: Optional[str] = Field(None, description="Unified OCR + Vision context")
     files: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Extracted file contexts attached to the request")
+    latency: Optional[Dict[str, Any]] = Field(None, description="Per-request latency breakdown: routing_ms, llm_ms, rag_ms, tool_ms, total_ms, cache_hit")
+
 
 
 @router.post("/chat", response_model=ChatResponse, summary="Chat with Sovereign AI")
@@ -333,11 +335,13 @@ async def chat(request: ChatRequest):
             unified_context = multimodal_result.get("combined_context", "")
 
             # 2. Select reasoning model (Chat/Reasoning LLM, not Moondream directly)
-            reasoning_model = (
-                request.model
-                if request.model != "auto"
-                else model_router.get_roles().get("chat", settings.OLLAMA_CHAT_MODEL)
+            reasoning_selection = model_router.select(
+                task_type="DOCUMENT_ANALYSIS",
+                requires_vision=False,
+                requires_tools=False,
+                preferred_model=request.model if request.model != "auto" else None
             )
+            reasoning_model = reasoning_selection["selected_model"]
 
             # Retrieve Memory Context (STM, LTM, Mem0, Qdrant, Neo4j)
             memory_ctx = ""
@@ -425,13 +429,135 @@ async def chat(request: ChatRequest):
         # -----------------------------------------------------------------
         # REGULAR TEXT CHAT: No images attached
         # -----------------------------------------------------------------
-        routing = task_classifier.classify(query, has_images=False)
-        task_type = routing.task_type
-        selected_agent = routing.agent if not request.agent or request.agent.lower() == "auto" else request.agent
-        selected_model = model_router.route(query, task_type=task_type) if request.model == "auto" else request.model
-        routing_reason = f"task classifier selected {selected_agent} ({routing.confidence:.2f})"
+        # Initialize telemetry for this request
+        from core.telemetry import RequestTelemetry, async_timer, timer as tel_timer
+        from services.cache_service import (
+            cache_service, route_key, rag_key, TTL_ROUTE, TTL_RAG
+        )
+        tel = RequestTelemetry(request_id=request_id)
 
+        has_attached_files = bool(request.file_ids and len(request.file_ids) > 0)
+        with tel_timer(tel, "routing_ms"):
+            routing = task_classifier.classify(query, has_images=False, has_files=has_attached_files)
+            task_type = routing.task_type
+
+        tel.agent = routing.agent or "general"
+        logger.info(
+            f"[{request_id}] Task classified: {task_type} | agent={routing.agent} | "
+            f"complexity={routing.complexity} | confidence={routing.confidence:.2f} | "
+            f"routing_ms={tel.routing_ms:.0f}ms"
+        )
+
+        # -----------------------------------------------------------------
+        # SHORT-CIRCUIT: SIMPLE_GREETING — bypass agent/RAG/tools entirely
+        # "Hello" → qwen2.5:0.5b → response in <1.5s
+        # -----------------------------------------------------------------
+        if task_type == "SIMPLE_GREETING":
+            greeting_model = routing.recommended_model or getattr(settings, "GPU_FALLBACK_MODEL", "qwen2.5:0.5b")
+            greeting_system = (
+                "You are a helpful sovereign AI assistant for industrial operations. "
+                "Respond warmly and briefly. You are an on-premise AI — completely private and secure."
+            )
+            greeting_msgs = [
+                {"role": "system", "content": greeting_system},
+                {"role": "user", "content": query}
+            ]
+            async with async_timer(tel, "llm_ms"):
+                greeting_reply = await ollama_client.chat(
+                    model=greeting_model,
+                    messages=greeting_msgs,
+                    options={"num_predict": 150, "temperature": 0.7}
+                )
+            tel.selected_model = greeting_model
+            tel.finalize()
+            summary = tel.log_summary()
+            logger.info(
+                f"[{request_id}] SIMPLE_GREETING completed: model={greeting_model} "
+                f"total_ms={summary['total_ms']:.0f}ms"
+            )
+            return ChatResponse(
+                response=greeting_reply,
+                model_used=greeting_model,
+                task_type="SIMPLE_GREETING",
+                model_routing_reason="Greeting detected — bypassed agent loop",
+                agent_used="general",
+                status="completed",
+                latency=summary
+            )
+
+        # -----------------------------------------------------------------
+        # SHORT-CIRCUIT: DETERMINISTIC DOCUMENT QUERIES (Section 5)
+        # "How many documents do I have?" → count_documents() → MongoDB in <20ms
+        # NO Qdrant search. NO 4B model. NO ReAct loop.
+        # -----------------------------------------------------------------
+        if task_type in ["DOCUMENT_COUNT", "DOCUMENT_LIST"]:
+            from rag.document_store import document_store
+            if task_type == "DOCUMENT_COUNT":
+                count = document_store.count_documents(user_id=request.user_id, is_admin=request.is_admin)
+                response_text = f"You have {count} document{'s' if count != 1 else ''} in the sovereign repository."
+            else:
+                docs = document_store.list_documents(limit=50, user_id=request.user_id, is_admin=request.is_admin)
+                if not docs:
+                    response_text = "No documents found in the sovereign repository."
+                else:
+                    lines = [f"Found {len(docs)} document(s) in repository:"]
+                    for idx, d in enumerate(docs, 1):
+                        name = d.get("name") or d.get("originalName") or d.get("filename")
+                        doc_id = d.get("document_id") or d.get("_id")
+                        dtype = d.get("documentType", "unknown")
+                        lines.append(f"{idx}. **{name}** (Type: `{dtype}`, ID: `{doc_id}`)")
+                    response_text = "\n".join(lines)
+
+            tel.selected_model = "deterministic_mongodb"
+            tel.finalize()
+            summary = tel.log_summary()
+            logger.info(
+                f"[{request_id}] {task_type} completed deterministically via MongoDB metadata: total_ms={summary['total_ms']:.0f}ms"
+            )
+            return ChatResponse(
+                response=response_text,
+                model_used="deterministic_mongodb",
+                task_type=task_type,
+                model_routing_reason="Deterministic MongoDB metadata query — no LLM needed (Section 5)",
+                agent_used="document_tool",
+                status="completed",
+                latency=summary
+            )
+
+        # -----------------------------------------------------------------
+        # MAIN ROUTING: task_type, model selection, agent dispatch
+        # -----------------------------------------------------------------
+        selected_agent = routing.agent if not request.agent or request.agent.lower() == "auto" else request.agent
+
+        # Try route cache first
+        r_cache_key = route_key(query)
+        cached_route = await cache_service.get(r_cache_key)
+        if cached_route and (not request.model or request.model == "auto"):
+            selected_model = cached_route.get("selected_model", routing.recommended_model)
+            routing_reason = cached_route.get("reason", "cached route") + " [cached]"
+            tel.cache_hit = True
+            tel.cache_key = r_cache_key
+        else:
+            with tel_timer(tel, "routing_ms"):
+                model_selection = model_router.select(
+                    task_type=task_type,
+                    requires_vision=routing.requires_vision,
+                    requires_tools=routing.requires_tools,
+                    complexity=routing.complexity,
+                    preferred_model=request.model if request.model != "auto" else None
+                )
+            selected_model = model_selection["selected_model"]
+            routing_reason = model_selection["reason"]
+            # Cache the routing result for this query
+            await cache_service.set(r_cache_key, {
+                "selected_model": selected_model,
+                "reason": routing_reason,
+                "task_type": task_type
+            }, ttl=TTL_ROUTE)
+
+        tel.selected_model = selected_model
         logger.info(f"[ROUTER] Selected model '{selected_model}' for task '{task_type}' (reason: {routing_reason})")
+
 
         # Multi-Layer Centralized Context Assembly
         enriched = await central_context_builder.build(
@@ -458,7 +584,10 @@ async def chat(request: ChatRequest):
                 model=selected_model,
                 system_prompt=enriched.system_prompt,
                 temperature=request.temperature,
-                max_tokens=request.max_tokens
+                max_tokens=request.max_tokens,
+                task_type=task_type,
+                requires_vision=routing.requires_vision,
+                requires_tools=routing.requires_tools
             )
             result = await agent.execute(
                 query=query,
@@ -619,11 +748,13 @@ async def chat_stream(request: ChatRequest):
         # -----------------------------------------------------------------
         if has_images:
             primary_image = validate_and_sanitize_image(request.images[0])
-            reasoning_model = (
-                request.model
-                if request.model != "auto"
-                else model_router.get_roles().get("chat", settings.OLLAMA_CHAT_MODEL)
+            reasoning_selection = model_router.select(
+                task_type="DOCUMENT_ANALYSIS",
+                requires_vision=False,
+                requires_tools=False,
+                preferred_model=request.model if request.model != "auto" else None
             )
+            reasoning_model = reasoning_selection["selected_model"]
 
             # Retrieve Memory Context (STM, LTM, Mem0, Qdrant, Neo4j)
             memory_ctx = ""
@@ -744,13 +875,77 @@ async def chat_stream(request: ChatRequest):
         routing = task_classifier.classify(query, has_images=False)
         task_type = routing.task_type
         selected_agent = routing.agent if not request.agent or request.agent.lower() == "auto" else request.agent
-        selected_model = model_router.route(query, task_type=task_type) if request.model == "auto" else request.model
-        routing_reason = f"task classifier selected {selected_agent} ({routing.confidence:.2f})"
+        model_selection = model_router.select(
+            task_type=task_type,
+            requires_vision=routing.requires_vision,
+            requires_tools=routing.requires_tools,
+            complexity=routing.complexity,
+            preferred_model=request.model if request.model != "auto" else None
+        )
+        selected_model = model_selection["selected_model"]
+        routing_reason = model_selection["reason"]
 
         logger.info(
             f"[CHAT_STREAM] Query: '{query[:60]}' | user_id={request.user_id} | "
             f"conversation_id={request.conversation_id} | agent={selected_agent} | model={selected_model} (reason: {routing_reason})"
         )
+
+        # -----------------------------------------------------------------
+        # FAST SHORT-CIRCUIT: SIMPLE_GREETING in stream
+        # -----------------------------------------------------------------
+        if task_type == "SIMPLE_GREETING":
+            greeting_model = routing.recommended_model or getattr(settings, "GPU_FALLBACK_MODEL", "qwen2.5:0.5b")
+            greeting_system = (
+                "You are a helpful sovereign AI assistant for industrial operations. "
+                "Respond warmly and briefly. You are an on-premise AI — completely private and secure."
+            )
+            greeting_msgs = [
+                {"role": "system", "content": greeting_system},
+                {"role": "user", "content": query}
+            ]
+
+            async def generate_greeting():
+                yield f"data: {json.dumps({'event': 'chat:status', 'model': greeting_model, 'task_type': 'SIMPLE_GREETING', 'agent': 'general', 'status': 'started', 'reason': 'Greeting detected — bypassed agent loop'}, ensure_ascii=False)}\n\n"
+                tokens = []
+                async for tok in ollama_client.chat_stream(
+                    model=greeting_model,
+                    messages=greeting_msgs,
+                    options={"num_predict": 150, "temperature": 0.7}
+                ):
+                    tokens.append(tok)
+                    yield f"data: {json.dumps({'token': tok, 'content': tok}, ensure_ascii=False)}\n\n"
+                full_greeting = "".join(tokens)
+                yield f"data: {json.dumps({'status': 'completed', 'response': full_greeting, 'agent': 'general', 'task_type': 'SIMPLE_GREETING'}, ensure_ascii=False)}\n\n"
+
+            return StreamingResponse(generate_greeting(), media_type="text/event-stream")
+
+        # -----------------------------------------------------------------
+        # FAST SHORT-CIRCUIT: DETERMINISTIC DOCUMENT QUERIES in stream
+        # -----------------------------------------------------------------
+        if task_type in ["DOCUMENT_COUNT", "DOCUMENT_LIST"]:
+            from rag.document_store import document_store
+            if task_type == "DOCUMENT_COUNT":
+                count = document_store.count_documents(user_id=request.user_id, is_admin=request.is_admin)
+                resp_text = f"You have {count} document{'s' if count != 1 else ''} in the sovereign repository."
+            else:
+                docs = document_store.list_documents(limit=50, user_id=request.user_id, is_admin=request.is_admin)
+                if not docs:
+                    resp_text = "No documents found in the sovereign repository."
+                else:
+                    lines = [f"Found {len(docs)} document(s) in repository:"]
+                    for idx, d in enumerate(docs, 1):
+                        name = d.get("name") or d.get("originalName") or d.get("filename")
+                        doc_id = d.get("document_id") or d.get("_id")
+                        dtype = d.get("documentType", "unknown")
+                        lines.append(f"{idx}. **{name}** (Type: `{dtype}`, ID: `{doc_id}`)")
+                    resp_text = "\n".join(lines)
+
+            async def generate_doc_meta():
+                yield f"data: {json.dumps({'event': 'chat:status', 'model': 'deterministic_mongodb', 'task_type': task_type, 'agent': 'document_tool', 'status': 'started'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'token': resp_text, 'content': resp_text}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'status': 'completed', 'response': resp_text, 'agent': 'document_tool', 'task_type': task_type}, ensure_ascii=False)}\n\n"
+
+            return StreamingResponse(generate_doc_meta(), media_type="text/event-stream")
 
         # Multi-Layer Centralized Context Assembly
         enriched = await central_context_builder.build(
@@ -767,7 +962,7 @@ async def chat_stream(request: ChatRequest):
         if file_context:
             enriched.system_prompt = enriched.system_prompt + "\n\n===== ATTACHED FILES =====\n" + file_context
 
-        is_agent_mode = bool(selected_agent and selected_agent.lower() not in ["none", "direct"])
+        is_agent_mode = bool(routing.requires_tools or (request.agent and request.agent.lower() not in ["auto", "general", "none", "direct"]))
 
         async def generate_text():
             try:
@@ -788,7 +983,10 @@ async def chat_stream(request: ChatRequest):
                         model=selected_model,
                         system_prompt=enriched.system_prompt,
                         temperature=request.temperature,
-                        max_tokens=request.max_tokens
+                        max_tokens=request.max_tokens,
+                        task_type=task_type,
+                        requires_vision=routing.requires_vision,
+                        requires_tools=routing.requires_tools
                     )
                     agent_full_resp = ""
                     async for event in agent.stream(

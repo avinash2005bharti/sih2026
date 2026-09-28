@@ -1,17 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import {
-  ShieldCheck,
   ChevronDown,
-  Download,
-  HelpCircle,
-  Menu,
   CheckCircle2,
-  Cpu,
-  User,
   Settings,
   Users,
   LogOut,
+  MoreVertical,
+  ShieldCheck,
+  FileDown,
+  HelpCircle,
+  PanelLeft,
 } from 'lucide-react';
 import { useChat } from '../../context/ChatContext';
 import { useAuth } from '../../context/AuthContext';
@@ -22,16 +21,19 @@ const TopHeader = () => {
   const {
     agents,
     selectedAgent,
-    setSelectedAgent,
+    switchAgent,
+    activeAgentState,
     setIsStatusModalOpen,
     isSidebarOpen,
-    setIsSidebarOpen,
+    toggleSidebar,
   } = useChat();
 
   const [isAgentMenuOpen, setIsAgentMenuOpen] = useState(false);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
+  const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
   const agentMenuRef = useRef(null);
   const profileMenuRef = useRef(null);
+  const actionsMenuRef = useRef(null);
 
   const isAdmin = user?.isAdmin || user?.role === 'admin';
 
@@ -53,55 +55,100 @@ const TopHeader = () => {
       if (profileMenuRef.current && !profileMenuRef.current.contains(e.target)) {
         setIsProfileMenuOpen(false);
       }
+      if (actionsMenuRef.current && !actionsMenuRef.current.contains(e.target)) {
+        setIsActionsMenuOpen(false);
+      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Compute status colors and labels for the ONE live status indicator
+  const agentStatus = activeAgentState?.status || 'idle';
+  const agentName = activeAgentState?.name || selectedAgent?.name || 'General Assistant';
+
+  const statusConfig = {
+    running: {
+      color: 'bg-blue-500',
+      ping: 'bg-blue-400',
+      label: 'Processing',
+      textColor: 'text-blue-700',
+      bgColor: 'bg-blue-50',
+    },
+    error: {
+      color: 'bg-rose-500',
+      ping: 'bg-rose-400',
+      label: 'Error',
+      textColor: 'text-rose-700',
+      bgColor: 'bg-rose-50',
+    },
+    idle: {
+      color: 'bg-emerald-500',
+      ping: 'bg-emerald-400',
+      label: 'Ready',
+      textColor: 'text-emerald-700',
+      bgColor: 'bg-emerald-50',
+    },
+  }[agentStatus] || {
+    color: 'bg-emerald-500',
+    ping: 'bg-emerald-400',
+    label: 'Ready',
+    textColor: 'text-emerald-700',
+    bgColor: 'bg-emerald-50',
+  };
+
   return (
     <header className="border-b border-slate-200/90 bg-white/95 backdrop-blur-md sticky top-0 z-30 flex-shrink-0 shadow-2xs">
       {/* Primary Header Bar */}
-      <div className="px-4 py-2.5 flex items-center justify-between gap-4">
-        {/* Left Side: Mobile Hamburger, Assistant Info & Agent Selector */}
-        <div className="flex items-center gap-3">
-          {/* Mobile Drawer Trigger */}
-          <button
-            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            className="p-1.5 text-slate-600 hover:text-slate-900 rounded-lg hover:bg-slate-100 lg:hidden transition-colors"
-            aria-label="Toggle Navigation Menu"
-          >
-            <Menu className="w-5 h-5" />
-          </button>
+      <div className="px-3.5 py-2 flex items-center justify-between gap-3">
+        {/* Left Side: Mobile Hamburger, Title & Agent Selector */}
+        <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+          {/* Sidebar Toggle — visible on all screens when sidebar is closed */}
+          {!isSidebarOpen && (
+            <button
+              onClick={() => toggleSidebar(true)}
+              className="p-1.5 text-slate-500 hover:text-slate-800 rounded-lg hover:bg-slate-100 transition-colors"
+              aria-label="Open sidebar"
+              title="Open sidebar"
+            >
+              <PanelLeft className="w-5 h-5" />
+            </button>
+          )}
 
-          {/* AI Assistant Title */}
-          <div>
+          {/* Rebranded Header Title: SWaRaj */}
+          <div className="flex flex-col justify-center">
             <div className="flex items-center gap-2">
-              <span className="text-sm font-bold text-slate-900 tracking-tight">
-                AI Assistant
+              <span className="text-sm font-black text-slate-900 tracking-tight">
+                SWaRaj
               </span>
-              <span className="w-2 h-2 rounded-full bg-emerald-500 pulse-dot" />
-              {isAdmin && (
-                <span className="px-1.5 py-0.2 text-[10px] font-mono font-bold uppercase rounded bg-purple-50 text-purple-700 border border-purple-200">
-                  ADMIN
-                </span>
-              )}
             </div>
-            <div className="text-[11px] text-slate-500 hidden sm:block font-medium">
-              Secure organizational industrial AI
+            <div className="text-[10px] text-slate-500 hidden md:block font-medium truncate max-w-xs">
+              Sovereign Workbench for Real-time Autonomous Judgment
             </div>
           </div>
 
-          {/* Agent Selector Dropdown */}
-          <div className="relative ml-2" ref={agentMenuRef}>
+          {/* Real-time Agent Selector Dropdown with LIVE status indicator */}
+          <div className="relative ml-1 sm:ml-2" ref={agentMenuRef}>
             <button
               onClick={() => setIsAgentMenuOpen(!isAgentMenuOpen)}
-              className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-full text-xs font-semibold text-slate-800 shadow-2xs transition-colors"
+              className="flex items-center gap-2 px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-full text-xs font-semibold text-slate-800 shadow-2xs transition-colors"
+              title={`Active Agent: ${agentName} (${statusConfig.label})`}
             >
-              <div className="p-0.5 bg-blue-100 text-blue-700 rounded-full">
-                <Cpu className="w-3.5 h-3.5" />
-              </div>
-              <span className="truncate max-w-[140px] sm:max-w-[180px]">
-                {selectedAgent?.name || 'General Assistant'}
+              {/* Subtle Live Indicator Pulsing Dot */}
+              <span className="relative flex h-2 w-2">
+                <span
+                  className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${statusConfig.ping}`}
+                />
+                <span
+                  className={`relative inline-flex rounded-full h-2 w-2 ${statusConfig.color}`}
+                />
+              </span>
+
+              <span className="truncate max-w-[130px] sm:max-w-[180px]">
+                {agentName}
+              </span>
+              <span className={`text-[9px] font-mono px-1.5 py-0.2 rounded font-bold uppercase ${statusConfig.bgColor} ${statusConfig.textColor} hidden sm:inline`}>
+                {statusConfig.label}
               </span>
               <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
             </button>
@@ -109,16 +156,20 @@ const TopHeader = () => {
             {/* Dropdown Menu */}
             {isAgentMenuOpen && (
               <div className="absolute left-0 mt-1.5 w-64 bg-white border border-slate-200 rounded-xl shadow-lg py-1.5 z-50 animate-in fade-in zoom-in-95 duration-150">
-                <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400 border-b border-slate-100">
-                  Select Specialized Agent
+                <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400 border-b border-slate-100 flex items-center justify-between">
+                  <span>Specialized Agents</span>
+                  <span className="text-[9px] text-emerald-600 font-mono">Real-Time Sync</span>
                 </div>
                 {agents.map((agent) => {
-                  const isSelected = selectedAgent?._id === agent._id;
+                  const isSelected =
+                    activeAgentState?.slug === agent.slug ||
+                    selectedAgent?._id === agent._id ||
+                    activeAgentState?.name === agent.name;
                   return (
                     <button
                       key={agent._id}
                       onClick={() => {
-                        setSelectedAgent(agent);
+                        switchAgent(agent);
                         setIsAgentMenuOpen(false);
                       }}
                       className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between hover:bg-slate-50 transition-colors ${
@@ -126,7 +177,12 @@ const TopHeader = () => {
                       }`}
                     >
                       <div>
-                        <div className="font-medium">{agent.name}</div>
+                        <div className="font-medium flex items-center gap-1.5">
+                          <span>{agent.name}</span>
+                          {isSelected && (
+                            <span className="w-1.5 h-1.5 rounded-full bg-blue-600" />
+                          )}
+                        </div>
                         {agent.description && (
                           <div className="text-[10px] text-slate-400 truncate max-w-[190px]">
                             {agent.description}
@@ -142,55 +198,78 @@ const TopHeader = () => {
           </div>
         </div>
 
-        {/* Right Side: Sovereign Status Pill, Controls & User Avatar Menu */}
-        <div className="flex items-center gap-2 sm:gap-3">
-          {/* Sovereign Mode Verified Pill Button */}
-          <button
-            onClick={() => setIsStatusModalOpen(true)}
-            className="flex items-center gap-2 px-3 py-1 bg-emerald-50 hover:bg-emerald-100/70 border border-emerald-200 text-emerald-800 text-[11px] font-mono font-semibold rounded-full tracking-wider transition-colors shadow-2xs"
-            title="View Sovereign AI Air-Gap & Cryptographic Verification"
-          >
-            <span className="w-2 h-2 rounded-full bg-emerald-500 pulse-dot" />
-            <span className="hidden md:inline">SOVEREIGN MODE VERIFIED</span>
-            <span className="md:hidden">SOVEREIGN</span>
-          </button>
+        {/* Right Side: Consolidated Options Overflow Menu & User Profile */}
+        <div className="flex items-center gap-1.5 sm:gap-2">
+          {/* Consolidated Actions & Security Menu */}
+          <div className="relative" ref={actionsMenuRef}>
+            <button
+              onClick={() => setIsActionsMenuOpen(!isActionsMenuOpen)}
+              className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors"
+              title="System Controls & Security"
+              aria-label="More options"
+            >
+              <MoreVertical className="w-4 h-4" />
+            </button>
 
-          {/* Quick Header Actions */}
-          <div className="flex items-center border-l border-slate-200 pl-2 gap-1 text-slate-500">
-            <button
-              onClick={() => setIsStatusModalOpen(true)}
-              className="p-1.5 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
-              title="Security & Isolation Status"
-            >
-              <ShieldCheck className="w-4 h-4 text-emerald-600" />
-            </button>
-            <button
-              onClick={() => window.print()}
-              className="p-1.5 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors hidden sm:block"
-              title="Export Current Conversation"
-            >
-              <Download className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => setIsStatusModalOpen(true)}
-              className="p-1.5 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
-              title="Air-Gap Architecture Help"
-            >
-              <HelpCircle className="w-4 h-4" />
-            </button>
+            {isActionsMenuOpen && (
+              <div className="absolute right-0 mt-1.5 w-56 bg-white border border-slate-200 rounded-xl shadow-lg py-1.5 z-50 animate-in fade-in zoom-in-95 duration-150 text-xs">
+                <div className="px-3 py-1 text-[10px] font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+                  System & Verification
+                </div>
+                <button
+                  onClick={() => {
+                    setIsActionsMenuOpen(false);
+                    setIsStatusModalOpen(true);
+                  }}
+                  className="w-full text-left px-3 py-2 text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors"
+                >
+                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                  <div>
+                    <div className="font-medium">Air-Gap Verification</div>
+                    <div className="text-[10px] text-slate-400">Cryptographic audit & status</div>
+                  </div>
+                </button>
+                <button
+                  onClick={() => {
+                    setIsActionsMenuOpen(false);
+                    window.print();
+                  }}
+                  className="w-full text-left px-3 py-2 text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors"
+                >
+                  <FileDown className="w-4 h-4 text-slate-500" />
+                  <div>
+                    <div className="font-medium">Export Conversation</div>
+                    <div className="text-[10px] text-slate-400">PDF report / print audit</div>
+                  </div>
+                </button>
+                <button
+                  onClick={() => {
+                    setIsActionsMenuOpen(false);
+                    setIsStatusModalOpen(true);
+                  }}
+                  className="w-full text-left px-3 py-2 text-slate-700 hover:bg-slate-50 flex items-center gap-2.5 transition-colors"
+                >
+                  <HelpCircle className="w-4 h-4 text-slate-500" />
+                  <div>
+                    <div className="font-medium">Architecture Help</div>
+                    <div className="text-[10px] text-slate-400">On-premise deployment guide</div>
+                  </div>
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Authenticated User Avatar Dropdown */}
-          <div className="relative border-l border-slate-200 pl-2 sm:pl-3" ref={profileMenuRef}>
+          <div className="relative border-l border-slate-200 pl-2 sm:pl-2.5" ref={profileMenuRef}>
             <button
               onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
-              className="flex items-center gap-2 p-1 hover:bg-slate-100 rounded-full sm:rounded-lg transition-colors"
+              className="flex items-center gap-2 p-0.5 hover:bg-slate-100 rounded-full sm:rounded-lg transition-colors"
               title={`Logged in as ${userFullName}`}
             >
               <div className="w-7 h-7 rounded-full bg-blue-600 text-white flex items-center justify-center text-xs font-bold shadow-2xs ring-1 ring-blue-500/20">
                 {userInitials}
               </div>
-              <span className="text-xs font-semibold text-slate-800 hidden md:inline truncate max-w-[130px]">
+              <span className="text-xs font-semibold text-slate-800 hidden md:inline truncate max-w-[120px]">
                 {userFullName}
               </span>
               <ChevronDown className="w-3 h-3 text-slate-400 hidden sm:block" />

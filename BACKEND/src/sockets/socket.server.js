@@ -34,11 +34,15 @@ module.exports = function initializeSocketServer(httpServer) {
       methods: ["GET", "POST"],
     },
     transports: ["websocket", "polling"],
+    maxHttpBufferSize: 50 * 1024 * 1024, // 50MB
   });
 
   io.use(async (socket, next) => {
     try {
       let token = socket.handshake.auth?.token;
+      if (!token && socket.handshake.headers?.authorization) {
+        token = socket.handshake.headers.authorization.replace(/^Bearer\s+/i, '').trim();
+      }
       if (!token && socket.request.headers.cookie) {
         token = socket.request.headers.cookie
           .split("; ")
@@ -84,6 +88,70 @@ module.exports = function initializeSocketServer(httpServer) {
       success: true,
       socketId: socket.id,
       message: "Socket connected to Sovereign AI Service",
+    });
+
+    // Real-Time Active Agent Synchronization
+    const userIdStr = socket.userId?.toString() || "default";
+    const userActiveAgents = global.userActiveAgents || (global.userActiveAgents = new Map());
+    let currentAgentState = userActiveAgents.get(userIdStr);
+    if (!currentAgentState) {
+      try {
+        const Agent = require("../models/agent.model");
+        const defaultAgent = await Agent.findOne({ isActive: true, slug: "general" })
+          || await Agent.findOne({ isActive: true }).sort({ createdAt: 1 });
+        currentAgentState = {
+          name: defaultAgent ? defaultAgent.name : "General Assistant",
+          slug: defaultAgent ? defaultAgent.slug : "general",
+          _id: defaultAgent ? defaultAgent._id.toString() : null,
+          status: "idle",
+          lastUpdated: new Date().toISOString()
+        };
+        userActiveAgents.set(userIdStr, currentAgentState);
+      } catch (err) {
+        currentAgentState = {
+          name: "General Assistant",
+          slug: "general",
+          status: "idle",
+          lastUpdated: new Date().toISOString()
+        };
+      }
+    }
+    socket.emit("agent:sync", currentAgentState);
+
+    socket.on("agent:get_active", () => {
+      const state = userActiveAgents.get(userIdStr) || {
+        name: "General Assistant",
+        slug: "general",
+        status: "idle",
+        lastUpdated: new Date().toISOString()
+      };
+      socket.emit("agent:sync", state);
+    });
+
+    socket.on("agent:switch", async (data) => {
+      try {
+        const Agent = require("../models/agent.model");
+        let targetAgent = null;
+        if (data.agentId) {
+          targetAgent = await Agent.findById(data.agentId);
+        } else if (data.agentSlug || data.slug) {
+          targetAgent = await Agent.findOne({ slug: data.agentSlug || data.slug });
+        } else if (data.name) {
+          targetAgent = await Agent.findOne({ name: data.name });
+        }
+
+        const updatedState = {
+          name: targetAgent ? targetAgent.name : (data.name || "General Assistant"),
+          slug: targetAgent ? targetAgent.slug : (data.slug || "general"),
+          _id: targetAgent ? targetAgent._id.toString() : null,
+          status: "idle",
+          lastUpdated: new Date().toISOString()
+        };
+        userActiveAgents.set(userIdStr, updatedState);
+        io.to(`user:${socket.userId}`).emit("agent:sync", updatedState);
+      } catch (swErr) {
+        console.error("agent:switch error:", swErr);
+      }
     });
 
     /**
@@ -220,6 +288,7 @@ module.exports = function initializeSocketServer(httpServer) {
           sender: "user",
           agent: agentDoc?._id,
           content: effectivePrompt,
+          metadata: attachment ? { attachment } : undefined,
         });
 
         // Emit start event
@@ -232,6 +301,19 @@ module.exports = function initializeSocketServer(httpServer) {
         socket.emit("chat:start", startedPayload); // legacy UI contract
         socket.emit("chat:started", startedPayload);
         socket.emit("chat:status", { ...startedPayload, stage: "accepted" });
+
+        // Sync active agent: running
+        const activeAgentName = agentDoc ? agentDoc.name : (userActiveAgents.get(userIdStr)?.name || "General Assistant");
+        const activeAgentSlug = agentDoc ? agentDoc.slug : (userActiveAgents.get(userIdStr)?.slug || "general");
+        const runningState = {
+          name: activeAgentName,
+          slug: activeAgentSlug,
+          _id: agentDoc ? agentDoc._id?.toString() : null,
+          status: "running",
+          lastUpdated: new Date().toISOString()
+        };
+        userActiveAgents.set(userIdStr, runningState);
+        io.to(`user:${socket.userId}`).emit("agent:sync", runningState);
 
         // Stream to AI service
         const abortController = new AbortController();
@@ -326,6 +408,17 @@ module.exports = function initializeSocketServer(httpServer) {
               });
               socket.emit("chat:response", { conversationId: chatId, messageId, response: fullResponse || "", generatedFiles, toolExecutions });
               socket.emit("chat:completed", { conversationId: chatId, messageId, status: "completed" });
+
+              // Sync active agent: idle
+              const idleState = {
+                name: activeAgentName,
+                slug: activeAgentSlug,
+                _id: agentDoc ? agentDoc._id?.toString() : null,
+                status: "idle",
+                lastUpdated: new Date().toISOString()
+              };
+              userActiveAgents.set(userIdStr, idleState);
+              io.to(`user:${socket.userId}`).emit("agent:sync", idleState);
             }
           },
           onError: (error) => {
@@ -337,6 +430,17 @@ module.exports = function initializeSocketServer(httpServer) {
             };
             socket.emit("chat:error", errorPayload);
             socket.emit("chat:completed", { conversationId: chatId, messageId, status: "failed" });
+
+            // Sync active agent: error
+            const errorState = {
+              name: activeAgentName,
+              slug: activeAgentSlug,
+              _id: agentDoc ? agentDoc._id?.toString() : null,
+              status: "error",
+              lastUpdated: new Date().toISOString()
+            };
+            userActiveAgents.set(userIdStr, errorState);
+            io.to(`user:${socket.userId}`).emit("agent:sync", errorState);
           },
         });
       } catch (error) {
@@ -348,6 +452,14 @@ module.exports = function initializeSocketServer(httpServer) {
           code: "INTERNAL_ERROR",
         });
         socket.emit("chat:completed", { conversationId: chatId, messageId, status: "failed" });
+
+        const errState = {
+          ...(userActiveAgents.get(userIdStr) || { name: "General Assistant", slug: "general" }),
+          status: "error",
+          lastUpdated: new Date().toISOString()
+        };
+        userActiveAgents.set(userIdStr, errState);
+        io.to(`user:${socket.userId}`).emit("agent:sync", errState);
       }
     });
 
@@ -365,6 +477,14 @@ module.exports = function initializeSocketServer(httpServer) {
         activeGenerations.delete(requestId);
         socket.emit("chat:stopped", { requestId, conversationId, status: "stopped" });
         console.log(`✅ Aborted generation for requestId: ${requestId}`);
+
+        const stoppedState = {
+          ...(userActiveAgents.get(userIdStr) || { name: "General Assistant", slug: "general" }),
+          status: "idle",
+          lastUpdated: new Date().toISOString()
+        };
+        userActiveAgents.set(userIdStr, stoppedState);
+        io.to(`user:${socket.userId}`).emit("agent:sync", stoppedState);
       } else {
         console.warn(`⚠️ Could not find active generation to stop for requestId: ${requestId}`);
       }

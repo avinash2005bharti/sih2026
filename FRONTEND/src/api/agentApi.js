@@ -7,6 +7,12 @@ export const agentApi = {
     return res.data;
   },
 
+  // Get current active agent state (polling / fallback)
+  getActiveAgent: async () => {
+    const res = await client.get('/agents/active');
+    return res.data;
+  },
+
   // Get agent by ID with populated model, tools, and knowledge bases
   getAgentById: async (agentId) => {
     const res = await client.get(`/agents/${agentId}`);

@@ -231,8 +231,8 @@ async def run_all_tests():
     for r in app.routes:
         if hasattr(r, "path"):
             route_paths.append(r.path)
-        # If r is an APIRouter or Mount
-        for sub_attr in ["routes", "app"]:
+        # If r is an APIRouter, Mount, or _IncludedRouter
+        for sub_attr in ["routes", "app", "original_router"]:
             if hasattr(r, sub_attr):
                 obj = getattr(r, sub_attr)
                 if hasattr(obj, "routes"):

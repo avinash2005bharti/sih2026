@@ -12,7 +12,7 @@ import {
 import { useChat } from '../../context/ChatContext';
 
 const ChatInputBar = ({ inputRef, onSend, initialValue = '' }) => {
-  const { selectedAgent, isGenerating, stopGeneration } = useChat();
+  const { selectedAgent, isGenerating, stopGeneration, activeAgentState } = useChat();
 
   const [input, setInput] = useState(initialValue);
   const [attachment, setAttachment] = useState(null);
@@ -215,15 +215,47 @@ const ChatInputBar = ({ inputRef, onSend, initialValue = '' }) => {
     };
   }, []);
 
-  const agentDisplayName = selectedAgent?.name || 'General Agent';
+  const agentDisplayName = activeAgentState?.name || selectedAgent?.name || 'General Assistant';
+  const agentStatus = activeAgentState?.status || (isGenerating ? 'running' : 'idle');
 
   return (
-    <div className="w-full max-w-3xl mx-auto px-4 pb-4">
-      {/* 1. Agent Name Indicator */}
-      <div className="flex items-center justify-center mb-2.5">
+    <div className="w-full max-w-3xl mx-auto px-4 pb-3">
+      {/* 1. Real-Time Active Backend Agent Pill */}
+      <div className="flex items-center justify-center mb-2">
         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/95 border border-slate-200 text-slate-700 text-xs font-semibold shadow-2xs">
-          <span className="w-2 h-2 rounded-full bg-blue-600 flex-shrink-0" />
+          {/* Live pulsing dot indicator */}
+          <span className="relative flex h-2 w-2">
+            <span
+              className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                agentStatus === 'running'
+                  ? 'bg-blue-400'
+                  : agentStatus === 'error'
+                  ? 'bg-rose-400'
+                  : 'bg-emerald-400'
+              }`}
+            />
+            <span
+              className={`relative inline-flex rounded-full h-2 w-2 ${
+                agentStatus === 'running'
+                  ? 'bg-blue-500'
+                  : agentStatus === 'error'
+                  ? 'bg-rose-500'
+                  : 'bg-emerald-500'
+              }`}
+            />
+          </span>
           <span className="tracking-tight">{agentDisplayName}</span>
+          <span
+            className={`text-[9px] font-mono px-1.5 py-0.2 rounded font-bold uppercase ${
+              agentStatus === 'running'
+                ? 'bg-blue-50 text-blue-700'
+                : agentStatus === 'error'
+                ? 'bg-rose-50 text-rose-700'
+                : 'bg-emerald-50 text-emerald-700'
+            }`}
+          >
+            {agentStatus === 'running' ? 'Active' : agentStatus === 'error' ? 'Error' : 'Ready'}
+          </span>
         </div>
       </div>
 
@@ -302,7 +334,7 @@ const ChatInputBar = ({ inputRef, onSend, initialValue = '' }) => {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask Sovereign AI to do something..."
+            placeholder="Ask SWaRaj AI to do something..."
             disabled={isGenerating}
             className="flex-1 max-h-[180px] py-2 px-2 text-sm text-slate-900 placeholder-slate-400 bg-transparent resize-none focus:outline-none leading-relaxed"
           />
@@ -350,8 +382,8 @@ const ChatInputBar = ({ inputRef, onSend, initialValue = '' }) => {
         </div>
       </div>
 
-      {/* Sovereign Footnote */}
-      <div className="text-center text-[10px] text-slate-400 font-mono mt-2 tracking-tight">
+      {/* Minimal Footer Line */}
+      <div className="text-center text-[9px] text-slate-400/70 font-mono mt-1.5 tracking-tight">
         Confidential PSU / Defense Grade • Sovereign On-Premise Execution
       </div>
     </div>

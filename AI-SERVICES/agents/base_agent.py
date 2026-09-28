@@ -25,9 +25,10 @@ class BaseAgent(ABC):
         """
         self.name = name
         
+        from llm.model_registry import model_registry
         config = get_agent_config(name)
         self.description = config.get("description", "")
-        self.model = config.get("primary_model", "qwen2.5:1.5b")
+        self.model = model_registry.get_agent_model(name)
         self.tools = config.get("available_tools", [])
         self.system_prompt = config.get("system_prompt", "")
         self.memory_enabled = config.get("memory_enabled", False)
@@ -51,8 +52,14 @@ class BaseAgent(ABC):
 
             prompt = self._build_prompt(task, context)
             
-            # Follow strict routing rules if model is AUTO, otherwise use the agent's primary_model
-            model = self.model if self.model else model_router.route(task, task_type="auto")
+            # Agent -> Task -> ModelRouter -> appropriate model
+            routing_res = model_router.select(
+                task_type=self.name,
+                requires_vision=(self.name in ["VisionAgent", "OCRAgent"]),
+                requires_tools=bool(self.tools),
+                preferred_model=self.model if self.model != "auto" else None
+            )
+            model = routing_res["selected_model"]
             
             response = await self._call_model(model, prompt)
             result = await self._process_response(response)

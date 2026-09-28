@@ -168,7 +168,9 @@ class SpreadsheetFilterTool(BaseTool):
                 "operator": operator,
                 "filter_value": value,
                 "matches_found": len(matched),
-                "rows": matched
+                "matches_count": len(matched),
+                "rows": matched,
+                "matched_rows": matched
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -232,3 +234,115 @@ class SpreadsheetWriteTool(BaseTool):
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+
+inspect_spreadsheet_tool = SpreadsheetInspectTool()
+filter_spreadsheet_tool = SpreadsheetFilterTool()
+write_spreadsheet_tool = SpreadsheetWriteTool()
+
+
+class SpreadsheetCreatorTool(BaseTool):
+    """Generates formatted Excel (.xlsx) workbooks with headers, data, formulas, and auto-styling."""
+
+    name = "xlsx_creator"
+    description = "Generate a formatted Excel workbook (.xlsx) with headers, rows, and optional summary formulas."
+
+    async def execute(
+        self,
+        title: str,
+        headers: List[str],
+        rows: List[List[Any]],
+        filename: Optional[str] = None,
+        summary_formula: Optional[str] = None,
+        sheet_name: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        return await self.arun(
+            title=title,
+            headers=headers,
+            rows=rows,
+            filename=filename,
+            summary_formula=summary_formula,
+            sheet_name=sheet_name,
+            **kwargs
+        )
+
+    async def arun(
+        self,
+        title: str,
+        headers: List[str],
+        rows: List[List[Any]],
+        filename: Optional[str] = None,
+        summary_formula: Optional[str] = None,
+        sheet_name: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        try:
+            import time
+            import openpyxl
+            from openpyxl.styles import Font, PatternFill, Alignment
+            from core.config import settings
+            from core.security import validate_safe_path
+
+            fname = filename or f"spreadsheet_{int(time.time())}.xlsx"
+            if not fname.lower().endswith(".xlsx"):
+                fname += ".xlsx"
+
+            target_path = settings.ARTIFACT_DIR / fname
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            safe_path = validate_safe_path(str(target_path))
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = (sheet_name or title or "Sheet1")[:31]
+
+            # Write header row
+            header_fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
+            header_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+            ws.append(headers)
+            for col_idx in range(1, len(headers) + 1):
+                cell = ws.cell(row=1, column=col_idx)
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+
+            # Write data rows
+            data_font = Font(name="Arial", size=10)
+            for r_data in rows:
+                ws.append(r_data)
+                curr_row = ws.max_row
+                for col_idx in range(1, len(r_data) + 1):
+                    ws.cell(row=curr_row, column=col_idx).font = data_font
+
+            # Write summary formula row if provided
+            if summary_formula:
+                summary_row = ["Summary / Total"] + [""] * max(0, len(headers) - 2) + [summary_formula]
+                ws.append(summary_row)
+                s_row = ws.max_row
+                summary_font = Font(name="Arial", size=10, bold=True)
+                for col_idx in range(1, len(summary_row) + 1):
+                    ws.cell(row=s_row, column=col_idx).font = summary_font
+
+            # Auto-adjust column widths
+            for col in ws.columns:
+                max_len = max(len(str(cell.value or '')) for cell in col)
+                col_letter = openpyxl.utils.get_column_letter(col[0].column)
+                ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+
+            wb.save(str(safe_path))
+            return {
+                "status": "success",
+                "success": True,
+                "file_path": str(safe_path),
+                "filename": fname,
+                "row_count": ws.max_row,
+                "col_count": ws.max_column
+            }
+        except Exception as e:
+            logger.error(f"SpreadsheetCreatorTool error: {e}")
+            return {"status": "error", "success": False, "error": str(e)}
+
+
+spreadsheet_creator_tool = SpreadsheetCreatorTool()
+
+

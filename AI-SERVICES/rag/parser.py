@@ -37,6 +37,17 @@ class DocumentParser:
         """Parse file from disk and return ParsedDocument."""
         path = Path(file_path)
         if not path.exists():
+            for alt in [
+                Path("workspace") / path.name,
+                Path("AI-SERVICES/workspace") / path.name,
+                Path(__file__).resolve().parent.parent / "workspace" / path.name,
+                Path.cwd() / "workspace" / path.name
+            ]:
+                if alt.exists():
+                    path = alt
+                    break
+
+        if not path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
 
         ext = path.suffix.lower()

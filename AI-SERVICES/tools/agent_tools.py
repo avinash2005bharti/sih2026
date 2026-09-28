@@ -665,8 +665,17 @@ def create_pdf(file_name: str, title: str, content: str = "", columns: Optional[
             raise FileNotFoundError(f"PDF generation failed; file '{clean_name}' does not exist on disk.")
 
         size = target.stat().st_size
+        if size < 100:
+            raise ValueError(f"Generated PDF '{clean_name}' is corrupt or empty ({size} bytes).")
+
+        # Validate PDF signature
+        with open(target, "rb") as pf:
+            header = pf.read(5)
+            if header != b"%PDF-":
+                raise ValueError(f"Generated file '{clean_name}' does not have a valid PDF header.")
+
         rel_path = f"reports/{clean_name}"
-        logger.info(f"[TOOL:create_pdf] Rich PDF successfully generated! Size: {size} bytes")
+        logger.info(f"[TOOL:create_pdf] Rich PDF successfully generated and validated! Size: {size} bytes")
         return json.dumps({
             "success": True,
             "file_name": clean_name,
@@ -1016,6 +1025,69 @@ def list_documents(
     except Exception as e:
         logger.error(f"[TOOL:list_documents] Error: {e}")
         return json.dumps({"success": False, "error": str(e), "documents": []})
+
+
+@tool
+def count_documents(
+    user_id: Optional[str] = None,
+    is_admin: Optional[bool] = None
+) -> str:
+    """
+    Return the exact total number of documents uploaded and accessible in the repository.
+    Deterministic metadata query executed directly against MongoDB / DocumentStore without LLM overhead.
+    Example: count_documents()
+    """
+    try:
+        from rag.document_store import document_store
+        count = document_store.count_documents(
+            user_id=user_id,
+            is_admin=bool(is_admin) if is_admin is not None else False
+        )
+        return json.dumps({
+            "success": True,
+            "count": count,
+            "message": f"There are {count} document{'s' if count != 1 else ''} in the repository."
+        })
+    except Exception as e:
+        logger.error(f"[TOOL:count_documents] Error: {e}")
+        return json.dumps({"success": False, "error": str(e), "count": 0})
+
+
+@tool
+def get_document_metadata(
+    document_id_or_name: str
+) -> str:
+    """
+    Retrieve structured canonical metadata (filename, size, status, chunk count, MIME type) for a specific document.
+    Example: get_document_metadata(document_id_or_name="P-102_manual.pdf")
+    """
+    try:
+        from rag.document_store import document_store
+        meta = document_store.get_document_metadata(document_id_or_name)
+        if not meta:
+            return json.dumps({"success": False, "error": f"Document '{document_id_or_name}' not found."})
+        return json.dumps({"success": True, "metadata": meta})
+    except Exception as e:
+        logger.error(f"[TOOL:get_document_metadata] Error: {e}")
+        return json.dumps({"success": False, "error": str(e)})
+
+
+@tool
+def get_document_chunks(
+    document_id_or_name: str,
+    limit: Optional[int] = 20
+) -> str:
+    """
+    Retrieve indexed text chunks for a specific document from the vector store or parser.
+    Example: get_document_chunks(document_id_or_name="P-102_manual.pdf", limit=10)
+    """
+    try:
+        from rag.document_store import document_store
+        chunks = document_store.get_document_chunks(document_id_or_name, limit=limit or 20)
+        return json.dumps({"success": True, "count": len(chunks), "chunks": chunks})
+    except Exception as e:
+        logger.error(f"[TOOL:get_document_chunks] Error: {e}")
+        return json.dumps({"success": False, "error": str(e), "chunks": []})
 
 
 @tool
@@ -1395,6 +1467,9 @@ AGENT_TOOLS = [
     search_knowledge_base,
     index_document,
     list_documents,
+    count_documents,
+    get_document_metadata,
+    get_document_chunks,
     get_document,
     get_document_content,
     search_database_documents,
@@ -1426,6 +1501,9 @@ TOOLS_MAP: Dict[str, Any] = {
     "search_knowledge_base": search_knowledge_base,
     "index_document": index_document,
     "list_documents": list_documents,
+    "count_documents": count_documents,
+    "get_document_metadata": get_document_metadata,
+    "get_document_chunks": get_document_chunks,
     "get_document": get_document,
     "get_document_content": get_document_content,
     "read_document_content": get_document_content,
@@ -1436,6 +1514,11 @@ TOOLS_MAP: Dict[str, Any] = {
     "delete_document": delete_document,
     "ocr_extract_text": ocr_extract_text,
     "analyze_image": analyze_image,
+    # Aliases for document metadata & count
+    "document_count": count_documents,
+    "document_metadata": get_document_metadata,
+    "document_chunks": get_document_chunks,
+    "count_docs": count_documents,
     # Aliases for file and terminal operations
     "file_terminal": file_terminal_operations,
     "terminal_ops": file_terminal_operations,

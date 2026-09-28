@@ -260,3 +260,7 @@ class ControlledCommandTool(BaseTool):
         except Exception as e:
             logger.error(f"ControlledCommandTool execution error: {e}")
             return {"success": False, "error": str(e), "exit_code": -1}
+
+
+python_execution_tool = PythonExecutionTool()
+
