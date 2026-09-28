@@ -439,7 +439,7 @@ AI_SERVICE_URL=http://localhost:8000
 PYTHON_AI_SERVICE_URL=http://localhost:8000
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_HOST=http://localhost:11434
-BREVO_SENDER_EMAIL=avinashbharti3007@gmail.com
+BREVO_SENDER_EMAIL=your email
 ```
 
 ### AI Services (`AI-SERVICES/.env`)
